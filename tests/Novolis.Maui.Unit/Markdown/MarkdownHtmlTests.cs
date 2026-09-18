@@ -17,6 +17,9 @@ public sealed class MarkdownHtmlTests
         await Assert.That(html).DoesNotContain("<script");
         await Assert.That(html).Contains("default-src 'none'");
         await Assert.That(html).Contains("architecture.md");
+        await Assert.That(html).Contains("data-theme=\"dark\"");
+        await Assert.That(html).Contains("color-scheme: dark");
+        await Assert.That(html).Contains("#0d1117");
     }
 
     [Test]
