@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
+    <PackageVersion Include="Microsoft.Maui.Controls" Version="10.0.101" />
+    <PackageVersion Include="Novolis.Markup.Markdown.Mermaid.Rendering" Version="2026.1.*" />
+    <PackageVersion Include="Novolis.Markup.Mermaid" Version="2026.1.*" />
+    <PackageVersion Include="Novolis.Markup.Mermaid.Rendering" Version="2026.1.*" />
+    <PackageVersion Include="TUnit" Version="1.44.39" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Novolis.Maui.WebView/Novolis.Maui.WebView.csproj" />
+    <Project Path="src/Novolis.Maui.Mermaid/Novolis.Maui.Mermaid.csproj" />
+    <Project Path="src/Novolis.Maui.Markdown/Novolis.Maui.Markdown.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Novolis.Maui.Unit/Novolis.Maui.Unit.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.WebView</PackageId>
+    <RootNamespace>Novolis.Maui.WebView</RootNamespace>
+    <Description>Locked-down MAUI WebView for locally rendered HTML (CSP, navigation policy). Avalonia equivalent is HtmlRenderer usage inside Novolis.Avalonia.Markdown.</Description>
+    <PackageTags>maui;webview;csp;html;novolis</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+  </ItemGroup>
+</Project>

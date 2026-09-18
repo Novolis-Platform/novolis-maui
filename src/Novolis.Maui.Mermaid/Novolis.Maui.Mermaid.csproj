@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Mermaid</PackageId>
+    <RootNamespace>Novolis.Maui.Mermaid</RootNamespace>
+    <Description>MAUI Mermaid diagram view: render Mermaid source (or Novolis.Markup.Mermaid builders) to SVG via Novolis.Markup.Mermaid.Rendering.</Description>
+    <PackageTags>maui;mermaid;diagram;svg;novolis</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+    <PackageReference Include="Novolis.Markup.Mermaid" />
+    <PackageReference Include="Novolis.Markup.Mermaid.Rendering" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Maui.WebView\Novolis.Maui.WebView.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,37 @@
+{
+  "packages": {
+    "Novolis.Maui.WebView": {
+      "project": "src/Novolis.Maui.WebView/Novolis.Maui.WebView.csproj",
+      "paths": [
+        "src/Novolis.Maui.WebView/**",
+        "tests/Novolis.Maui.Unit/WebView/**",
+        "Directory.Build.props",
+        "Directory.Packages.props",
+        "global.json",
+        "Novolis.Maui.slnx"
+      ]
+    },
+    "Novolis.Maui.Mermaid": {
+      "project": "src/Novolis.Maui.Mermaid/Novolis.Maui.Mermaid.csproj",
+      "paths": [
+        "src/Novolis.Maui.Mermaid/**",
+        "tests/Novolis.Maui.Unit/Mermaid/**",
+        "Directory.Build.props",
+        "Directory.Packages.props",
+        "global.json",
+        "Novolis.Maui.slnx"
+      ]
+    },
+    "Novolis.Maui.Markdown": {
+      "project": "src/Novolis.Maui.Markdown/Novolis.Maui.Markdown.csproj",
+      "paths": [
+        "src/Novolis.Maui.Markdown/**",
+        "tests/Novolis.Maui.Unit/Markdown/**",
+        "Directory.Build.props",
+        "Directory.Packages.props",
+        "global.json",
+        "Novolis.Maui.slnx"
+      ]
+    }
+  }
+}

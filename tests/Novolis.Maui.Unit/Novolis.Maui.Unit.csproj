@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Novolis.Maui.Unit</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Novolis.Maui.WebView/Novolis.Maui.WebView.csproj" />
+    <ProjectReference Include="../../src/Novolis.Maui.Mermaid/Novolis.Maui.Mermaid.csproj" />
+    <ProjectReference Include="../../src/Novolis.Maui.Markdown/Novolis.Maui.Markdown.csproj" />
+  </ItemGroup>
+</Project>

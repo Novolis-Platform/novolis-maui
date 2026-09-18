@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Markdown</PackageId>
+    <RootNamespace>Novolis.Maui.Markdown</RootNamespace>
+    <Description>MAUI Markdown viewer: Novolis.Markup HTML + Mermaid SVG in a locked-down WebView. Avalonia equivalent is Novolis.Avalonia.Markdown.</Description>
+    <PackageTags>maui;markdown;mermaid;webview;novolis</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+    <PackageReference Include="Novolis.Markup.Markdown.Mermaid.Rendering" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Maui.WebView\Novolis.Maui.WebView.csproj" />
+  </ItemGroup>
+</Project>

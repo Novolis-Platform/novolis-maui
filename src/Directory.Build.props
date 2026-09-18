@@ -1,0 +1,15 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)..\Directory.Build.props" />
+  <Import Project="$(MSBuildThisFileDirectory)..\..\novolis-governance\build\Novolis.Documentation.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\..\novolis-governance\build\Novolis.Documentation.props')" />
+  <Import Project="$(MSBuildThisFileDirectory)..\..\novolis-governance\build\Novolis.PackageReadme.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\..\novolis-governance\build\Novolis.PackageReadme.props')" />
+  <PropertyGroup>
+    <UseMaui>true</UseMaui>
+    <SingleProject>true</SingleProject>
+    <IsPackable>true</IsPackable>
+    <WindowsPackageType>None</WindowsPackageType>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+  </PropertyGroup>
+</Project>
