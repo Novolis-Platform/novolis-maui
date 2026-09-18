@@ -30,6 +30,8 @@ Apps (Merglyph picker, activation, platform WebView engine lockdown)
 
 Avalonia hosts use the same Markup packages via `Novolis.Avalonia.Markdown` / `.Mermaid`.
 
+Libraries target `net10.0` with `Microsoft.Maui.Controls` — not `UseMaui` app TFMs — so pack/test on the same Linux merge pipeline as Avalonia. Product hosts (Merglyph) keep `UseMaui` and platform frameworks.
+
 ## Non-goals
 
 - Product hosts or `apps/` in this repo
