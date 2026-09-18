@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <strong>MAUI chrome for Markdown and Mermaid</strong><br/>
+  <strong>MAUI Markdown and Mermaid</strong><br/>
   MAUI viewers that compose Novolis.Markup — the Avalonia-equivalent island.
 </p>
 
@@ -19,6 +19,16 @@
   <a href="https://github.com/Novolis-Platform/novolis-maui/actions"><img src="https://img.shields.io/github/actions/workflow/status/Novolis-Platform/novolis-maui/merge.yml?branch=main&label=merge&logo=github" alt="merge"/></a>
   <a href="https://github.com/orgs/Novolis-Platform/packages?repo_name=novolis-maui"><img src="https://img.shields.io/badge/packages-GitHub%20Packages-0a7ea3?logo=nuget" alt="packages"/></a>
   <a href="https://github.com/Novolis-Platform"><img src="https://img.shields.io/badge/org-Novolis--Platform-111827" alt="org"/></a>
+</p>
+
+<p align="center">
+  <a href="https://novolis-platform.github.io/.github/novolis-maui/">Docs</a>
+  ·
+  <a href="https://nuget.pkg.github.com/Novolis-Platform/index.json"><code>https://nuget.pkg.github.com/Novolis-Platform/index.json</code></a>
+  ·
+  <a href="https://github.com/Novolis-Platform/.github/blob/main/profile/README.md">Org landing</a>
+  ·
+  <a href="https://github.com/Novolis-Platform/novolis-governance">Governance</a>
 </p>
 
 ---
@@ -31,9 +41,9 @@
 
 | Package | Install | Package README |
 |---------|---------|----------------|
-| `Novolis.Maui.WebView` | `dotnet add package Novolis.Maui.WebView` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.WebView/README.md) |
-| `Novolis.Maui.Mermaid` | `dotnet add package Novolis.Maui.Mermaid` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Mermaid/README.md) |
 | `Novolis.Maui.Markdown` | `dotnet add package Novolis.Maui.Markdown` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Markdown/README.md) |
+| `Novolis.Maui.Mermaid` | `dotnet add package Novolis.Maui.Mermaid` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Mermaid/README.md) |
+| `Novolis.Maui.WebView` | `dotnet add package Novolis.Maui.WebView` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.WebView/README.md) |
 
 For NuGet.org and Visual Studio, the **embedded** README.md inside each package is authoritative.
 
@@ -69,3 +79,4 @@ var view = new MarkdownView
 ```
 
 Merglyph is a thin host of these packages (picker, activation, Android/Windows WebView engine lockdown).
+
