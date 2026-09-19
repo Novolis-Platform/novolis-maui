@@ -9,6 +9,6 @@
     <PackageVersion Include="Novolis.Markup.Markdown.Mermaid.Rendering" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Markup.Mermaid" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Markup.Mermaid.Rendering" Version="2026.1.*" />
-    <PackageVersion Include="TUnit" Version="1.44.39" />
+    <PackageVersion Include="TUnit" Version="1.68.17" />
   </ItemGroup>
 </Project>
