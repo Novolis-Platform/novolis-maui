@@ -8,7 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" />
-    <PackageReference Include="Novolis.Markup.Markdown.Mermaid.Rendering" />
+    <LibraryReference Include="Novolis.Markup.Markdown.Mermaid.Rendering" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Novolis.Maui.WebView\Novolis.Maui.WebView.csproj" />
