@@ -40,8 +40,9 @@ public sealed class PdfViewer : ContentView
     private readonly CollectionView _pageRail;
     private readonly CollectionView _outlineList;
     private readonly ScrollView _readingScroll;
-    private readonly Grid _readingPane;
-    private readonly PdfPageView _readingPage;
+    private readonly VerticalStackLayout _readingStrip;
+    private readonly Grid[] _readingSlots = new Grid[PdfPageTurn.WindowSize];
+    private readonly PdfPageView[] _readingPages = new PdfPageView[PdfPageTurn.WindowSize];
     private readonly Grid _sidebar;
     private readonly Grid _workspace;
     private readonly Grid _viewerHeader;
@@ -63,6 +64,9 @@ public sealed class PdfViewer : ContentView
     private PdfFitKind _fitKind = PdfFitKind.Page;
     private bool _fitUserChosen;
     private bool _reloadingStack;
+    private bool _syncingScroll;
+    private int _windowStart;
+    private IDispatcherTimer? _scrollSettle;
     private bool _showOutline;
     private bool _sidebarOpen;
     private IReadOnlyList<PdfOutlineItem> _outlines = [];
@@ -180,33 +184,33 @@ public sealed class PdfViewer : ContentView
         {
             Command = new Command(CloseCompactSidebar),
         });
-        _readingPage = new PdfPageView
+        _readingStrip = new VerticalStackLayout
         {
-            HorizontalOptions = LayoutOptions.Center,
-            VerticalOptions = LayoutOptions.Center,
-            RenderPageAsync = RenderReadingAsync,
-            RenderFailed = OnPageRenderFailed,
-        };
-        _readingPane = new Grid
-        {
+            Spacing = 0,
             BackgroundColor = Profile.Background,
-            HorizontalOptions = LayoutOptions.Fill,
-            VerticalOptions = LayoutOptions.Fill,
         };
-        _readingPane.Add(_readingPage);
+        for (var slot = 0; slot < PdfPageTurn.WindowSize; slot++)
+            _readingStrip.Add(CreateReadingSlot(slot));
         _readingScroll = new ScrollView
         {
             AutomationId = "PdfReadingPage",
             BackgroundColor = Profile.Background,
             Orientation = ScrollOrientation.Vertical,
+            HorizontalOptions = LayoutOptions.Fill,
+            VerticalOptions = LayoutOptions.Fill,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Never,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Never,
-            Content = _readingPane,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Default,
+            Content = _readingStrip,
         };
         _readingScroll.SizeChanged += (_, _) => UpdatePaneFromReadingStack();
+        _readingScroll.Scrolled += OnReadingScrolled;
         var pinch = new PinchGestureRecognizer();
         pinch.PinchUpdated += OnPinchUpdated;
         _readingScroll.GestureRecognizers.Add(pinch);
+        _scrollSettle = Dispatcher.CreateTimer();
+        _scrollSettle.Interval = TimeSpan.FromMilliseconds(140);
+        _scrollSettle.IsRepeating = false;
+        _scrollSettle.Tick += (_, _) => _ = SettleReadingScrollAsync();
         _workspace = new Grid
         {
             ColumnSpacing = 8,
@@ -334,7 +338,8 @@ public sealed class PdfViewer : ContentView
             return true;
         }
 
-        return false;
+        _ = GoToPageAsync(_pageIndex + (delta > 0 ? -1 : 1));
+        return true;
     }
 
     private double ReadingPaneWidth => System.Math.Max(160, _paneWidth);
@@ -455,7 +460,7 @@ public sealed class PdfViewer : ContentView
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
             _pageRail.ItemsSource = null;
-            _readingPage.PageIndex = -1;
+            ClearReadingWindow();
             _outlineList.ItemsSource = null;
             _searchBar.Text = string.Empty;
             _searchStatus.Text = string.Empty;
@@ -917,42 +922,250 @@ public sealed class PdfViewer : ContentView
         if (_pages.Count == 0)
             return;
         _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: animate);
-        ShowReadingPage();
+        _ = NavigateReadingAsync(animate);
     }
 
     private void ShowReadingPage()
     {
         if (_pages.Count == 0)
         {
-            _readingPage.PageIndex = -1;
+            ClearReadingWindow();
+            UpdateToolbar();
             return;
         }
 
-        var cell = CellSize(_pageIndex);
-        _readingPage.PageWidth = cell.Width;
-        _readingPage.PageHeight = cell.Height;
-        _readingPage.HorizontalOptions = LayoutOptions.Center;
-        _readingPage.VerticalOptions = _fitKind == PdfFitKind.Page
-            ? LayoutOptions.Center
-            : LayoutOptions.Start;
-        _readingScroll.VerticalScrollBarVisibility = _fitKind == PdfFitKind.Width
-            ? ScrollBarVisibility.Always
-            : ScrollBarVisibility.Never;
-        _readingPane.WidthRequest = ReadingPaneWidth;
-        _readingPane.MinimumWidthRequest = ReadingPaneWidth;
-        _readingPane.HeightRequest = _fitKind == PdfFitKind.Width
-            ? System.Math.Max(ReadingPaneHeight, cell.Height)
-            : ReadingPaneHeight;
-        _readingPane.MinimumHeightRequest = _readingPane.HeightRequest;
-        _readingPage.PageIndex = _pageIndex;
+        ReloadReadingWindow();
+        _ = NavigateReadingAsync(animate: false);
         UpdateToolbar();
+    }
+
+    private Grid CreateReadingSlot(int windowIndex)
+    {
+        var page = new PdfPageView
+        {
+            HorizontalOptions = LayoutOptions.Center,
+            VerticalOptions = LayoutOptions.Center,
+            RenderPageAsync = RenderReadingAsync,
+            RenderFailed = OnPageRenderFailed,
+        };
+        _readingPages[windowIndex] = page;
+        var slot = new Grid
+        {
+            BackgroundColor = Profile.Background,
+            HorizontalOptions = LayoutOptions.Fill,
+        };
+        slot.Add(page);
+        _readingSlots[windowIndex] = slot;
+        return slot;
+    }
+
+    private double SlotHeight
+    {
+        get
+        {
+            if (_pages.Count == 0)
+                return ReadingPaneHeight;
+            var cell = CellSize(_pageIndex);
+            return _fitKind == PdfFitKind.Page
+                ? ReadingPaneHeight
+                : System.Math.Max(1, cell.Height + 8);
+        }
+    }
+
+    private void ClearReadingWindow()
+    {
+        _windowStart = 0;
+        foreach (var page in _readingPages)
+            page.PageIndex = -1;
+        foreach (var slot in _readingSlots)
+            slot.IsVisible = false;
+    }
+
+    private void ReloadReadingWindow()
+    {
+        if (_pages.Count == 0)
+        {
+            ClearReadingWindow();
+            return;
+        }
+
+        _windowStart = PdfPageTurn.WindowStart(_pageIndex, _pages.Count);
+        var slotHeight = SlotHeight;
+        var slotWidth = ReadingPaneWidth;
+        _readingStrip.WidthRequest = slotWidth;
+        _readingStrip.MinimumWidthRequest = slotWidth;
+        _readingScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Default;
+        var visible = 0;
+        for (var i = 0; i < PdfPageTurn.WindowSize; i++)
+        {
+            var slot = _readingSlots[i];
+            var page = _readingPages[i];
+            var pageIndex = _windowStart + i;
+            slot.WidthRequest = slotWidth;
+            slot.MinimumWidthRequest = slotWidth;
+            slot.HeightRequest = slotHeight;
+            slot.MinimumHeightRequest = slotHeight;
+            slot.MaximumHeightRequest = slotHeight;
+            slot.BackgroundColor = Profile.Background;
+            if (pageIndex >= _pages.Count)
+            {
+                page.PageIndex = -1;
+                slot.IsVisible = false;
+                continue;
+            }
+
+            slot.IsVisible = true;
+            visible++;
+            var cell = CellSize(pageIndex);
+            page.HorizontalOptions = LayoutOptions.Center;
+            page.VerticalOptions = _fitKind == PdfFitKind.Page
+                ? LayoutOptions.Center
+                : LayoutOptions.Start;
+            page.PageWidth = cell.Width;
+            page.PageHeight = cell.Height;
+            page.PageIndex = pageIndex;
+        }
+
+        _readingStrip.HeightRequest = System.Math.Max(slotHeight, visible * slotHeight);
+        _readingStrip.MinimumHeightRequest = _readingStrip.HeightRequest;
+    }
+
+    private bool ReadingWindowContains(int pageIndex) =>
+        _readingPages[0].PageIndex >= 0
+        && pageIndex >= _windowStart
+        && pageIndex < _windowStart + PdfPageTurn.WindowSize
+        && pageIndex < _pages.Count;
+
+    private async Task NavigateReadingAsync(bool animate)
+    {
+        if (_pages.Count == 0)
+        {
+            ClearReadingWindow();
+            return;
+        }
+
+        var alreadyShowing = ReadingWindowContains(_pageIndex);
+        _syncingScroll = true;
+        try
+        {
+            if (alreadyShowing && animate)
+            {
+                var y = PdfPageTurn.SlotOffset(_pageIndex, _windowStart, SlotHeight);
+                await _readingScroll.ScrollToAsync(0, y, animated: true).ConfigureAwait(true);
+            }
+            else
+            {
+                ReloadReadingWindow();
+                var y = PdfPageTurn.SlotOffset(_pageIndex, _windowStart, SlotHeight);
+                await _readingScroll.ScrollToAsync(0, y, animated: false).ConfigureAwait(true);
+                await Task.Delay(50).ConfigureAwait(true);
+            }
+        }
+        finally
+        {
+            _syncingScroll = false;
+        }
+
+        _scrollSettle?.Stop();
+        _scrollSettle?.Start();
+    }
+
+    private async Task RecenterReadingWindowAsync(int pageIndex, double scrollY)
+    {
+        if (_pages.Count == 0)
+            return;
+        _syncingScroll = true;
+        try
+        {
+            var intended = System.Math.Clamp(pageIndex, 0, _pages.Count - 1);
+            var oldStart = _windowStart;
+            var slotHeight = SlotHeight;
+            var pageOffset = scrollY - PdfPageTurn.SlotOffset(intended, oldStart, slotHeight);
+            _pageIndex = intended;
+            var desiredStart = PdfPageTurn.WindowStart(intended, _pages.Count);
+            if (desiredStart == _windowStart)
+                return;
+            ReloadReadingWindow();
+            var y = System.Math.Max(
+                0,
+                PdfPageTurn.SlotOffset(_pageIndex, _windowStart, SlotHeight) + pageOffset);
+            await _readingScroll.ScrollToAsync(0, y, animated: false).ConfigureAwait(true);
+            await Task.Delay(50).ConfigureAwait(true);
+            _pageIndex = intended;
+            SyncRailSelection();
+            UpdateToolbar();
+        }
+        finally
+        {
+            _syncingScroll = false;
+        }
+    }
+
+    private void OnReadingScrolled(object? sender, ScrolledEventArgs args)
+    {
+        if (_syncingScroll || _pages.Count == 0 || _reloadingStack)
+            return;
+        UpdateReadingPageFromScroll(args.ScrollY);
+        _scrollSettle?.Stop();
+        _scrollSettle?.Start();
+    }
+
+    private void UpdateReadingPageFromScroll(double scrollY)
+    {
+        var pageIndex = PdfPageTurn.PageIndexAt(scrollY, _windowStart, _pages.Count, SlotHeight);
+        if (pageIndex != _pageIndex)
+        {
+            _pageIndex = pageIndex;
+            SyncRailSelection();
+            UpdateToolbar();
+            PageChanged?.Invoke(this, EventArgs.Empty);
+            _ = SavePositionAsync(CancellationToken.None);
+        }
+    }
+
+    private async Task SettleReadingScrollAsync()
+    {
+        if (_syncingScroll || _pages.Count == 0)
+            return;
+        var scrollY = _readingScroll.ScrollY;
+        var slotHeight = SlotHeight;
+        var visibleSlots = System.Math.Max(1, System.Math.Min(PdfPageTurn.WindowSize, _pages.Count - _windowStart));
+        var maxOffset = (visibleSlots - 1) * slotHeight;
+        var snapped = _fitKind == PdfFitKind.Page
+            ? System.Math.Clamp(PdfPageTurn.SnapOffset(scrollY, slotHeight), 0, maxOffset)
+            : scrollY;
+        var pageIndex = PdfPageTurn.PageIndexAt(snapped, _windowStart, _pages.Count, slotHeight);
+        _syncingScroll = true;
+        try
+        {
+            if (_fitKind == PdfFitKind.Page && System.Math.Abs(snapped - scrollY) > 2)
+                await _readingScroll.ScrollToAsync(0, snapped, animated: true).ConfigureAwait(true);
+            if (pageIndex != _pageIndex)
+            {
+                _pageIndex = pageIndex;
+                SyncRailSelection();
+                UpdateToolbar();
+                PageChanged?.Invoke(this, EventArgs.Empty);
+                _ = SavePositionAsync(CancellationToken.None);
+            }
+
+            var start = PdfPageTurn.WindowStart(pageIndex, _pages.Count);
+            if (start != _windowStart)
+                await RecenterReadingWindowAsync(pageIndex, snapped).ConfigureAwait(true);
+        }
+        finally
+        {
+            _syncingScroll = false;
+        }
     }
 
     private void ApplyTheme()
     {
         BackgroundColor = Profile.Background;
         _readingScroll.BackgroundColor = Profile.Background;
-        _readingPane.BackgroundColor = Profile.Background;
+        _readingStrip.BackgroundColor = Profile.Background;
+        foreach (var slot in _readingSlots)
+            slot.BackgroundColor = Profile.Background;
         _pageRail.BackgroundColor = Profile.Surface;
         _outlineList.BackgroundColor = Profile.Surface;
         _sidebar.BackgroundColor = Profile.Surface;
