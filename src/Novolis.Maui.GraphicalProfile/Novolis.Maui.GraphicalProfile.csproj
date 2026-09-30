@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.GraphicalProfile</PackageId>
+    <RootNamespace>Novolis.Maui.GraphicalProfile</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Required Novolis graphical profile for MAUI hosts: Merglyph palette, typography, geometry, and dynamic theme resources.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+  </ItemGroup>
+</Project>
