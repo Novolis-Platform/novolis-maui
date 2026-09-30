@@ -2,8 +2,6 @@ using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 
-#pragma warning disable CS1591
-
 namespace Novolis.Maui.GraphicalProfile;
 
 /// <summary>
@@ -11,81 +9,125 @@ namespace Novolis.Maui.GraphicalProfile;
 /// </summary>
 public static class GraphicalProfile
 {
+    /// <summary>Dynamic resource key for the page canvas.</summary>
     public const string BackgroundResourceKey = "Ngp.Background";
+
+    /// <summary>Dynamic resource key for cards and fields.</summary>
     public const string SurfaceResourceKey = "Ngp.Surface";
+
+    /// <summary>Dynamic resource key for selected and raised rows.</summary>
     public const string RaisedResourceKey = "Ngp.Raised";
+
+    /// <summary>Dynamic resource key for structural strokes.</summary>
     public const string BorderResourceKey = "Ngp.Border";
+
+    /// <summary>Dynamic resource key for primary text.</summary>
     public const string TextResourceKey = "Ngp.Text";
+
+    /// <summary>Dynamic resource key for supporting text.</summary>
     public const string MutedResourceKey = "Ngp.Muted";
+
+    /// <summary>Dynamic resource key for eyebrows and focus.</summary>
     public const string AccentResourceKey = "Ngp.Accent";
+
+    /// <summary>Dynamic resource key for open and navigate actions.</summary>
     public const string AccentFillResourceKey = "Ngp.AccentFill";
+
+    /// <summary>Dynamic resource key for text on accent fill.</summary>
     public const string OnAccentFillResourceKey = "Ngp.OnAccentFill";
+
+    /// <summary>Dynamic resource key for the one commit action.</summary>
     public const string ActionResourceKey = "Ngp.Action";
+
+    /// <summary>Dynamic resource key for text on the commit action.</summary>
     public const string OnActionResourceKey = "Ngp.OnAction";
+
+    /// <summary>Dynamic resource key for informational chips.</summary>
     public const string ActionSoftResourceKey = "Ngp.ActionSoft";
+
+    /// <summary>Dynamic resource key for validation copy.</summary>
     public const string WarningResourceKey = "Ngp.Warning";
+
+    /// <summary>Dynamic resource key for failure copy.</summary>
     public const string DangerResourceKey = "Ngp.Danger";
 
+    /// <summary>Body face from the governance bundle.</summary>
     public const string FontFamily = GraphicalProfileColors.FontFamily;
+
+    /// <summary>Monospace face from the governance bundle.</summary>
     public const string MonoFontFamily = GraphicalProfileColors.MonoFontFamily;
 
+    /// <summary>Current background role.</summary>
     public static Color Background => CurrentColor(
         BackgroundResourceKey,
         GraphicalProfileColors.BackgroundDark);
 
+    /// <summary>Current surface role.</summary>
     public static Color Surface => CurrentColor(
         SurfaceResourceKey,
         GraphicalProfileColors.SurfaceDark);
 
+    /// <summary>Current raised role.</summary>
     public static Color Raised => CurrentColor(
         RaisedResourceKey,
         GraphicalProfileColors.RaisedDark);
 
+    /// <summary>Current border role.</summary>
     public static Color Border => CurrentColor(
         BorderResourceKey,
         GraphicalProfileColors.BorderDark);
 
+    /// <summary>Current text role.</summary>
     public static Color Text => CurrentColor(
         TextResourceKey,
         GraphicalProfileColors.TextDark);
 
+    /// <summary>Current muted role.</summary>
     public static Color Muted => CurrentColor(
         MutedResourceKey,
         GraphicalProfileColors.MutedDark);
 
+    /// <summary>Current accent role.</summary>
     public static Color Accent => CurrentColor(
         AccentResourceKey,
         GraphicalProfileColors.AccentDark);
 
+    /// <summary>Current accent fill role.</summary>
     public static Color AccentFill => CurrentColor(
         AccentFillResourceKey,
         GraphicalProfileColors.AccentFillDark);
 
+    /// <summary>Current on-accent-fill role.</summary>
     public static Color OnAccentFill => CurrentColor(
         OnAccentFillResourceKey,
         GraphicalProfileColors.OnAccentFillDark);
 
+    /// <summary>Current action role.</summary>
     public static Color Action => CurrentColor(
         ActionResourceKey,
         GraphicalProfileColors.ActionDark);
 
+    /// <summary>Current on-action role.</summary>
     public static Color OnAction => CurrentColor(
         OnActionResourceKey,
         GraphicalProfileColors.OnActionDark);
 
+    /// <summary>Current action-soft role.</summary>
     public static Color ActionSoft => CurrentColor(
         ActionSoftResourceKey,
         GraphicalProfileColors.ActionSoftDark);
 
+    /// <summary>Current warning role.</summary>
     public static Color Warning => CurrentColor(
         WarningResourceKey,
         GraphicalProfileColors.WarningDark);
 
+    /// <summary>Current danger role.</summary>
     public static Color Danger => CurrentColor(
         DangerResourceKey,
         GraphicalProfileColors.DangerDark);
 
-    /// <summary>Installs dynamic resources and theme-change propagation.</summary>
+    /// <summary>Installs <c>Ngp.*</c> keys and keeps them aligned with the requested theme.</summary>
     public static void Install(Application application)
     {
         ArgumentNullException.ThrowIfNull(application);
@@ -100,9 +142,7 @@ public static class GraphicalProfile
         application.Resources["Ngp.Installed"] = true;
     }
 
-    private static void OnRequestedThemeChanged(
-        object? sender,
-        AppThemeChangedEventArgs args)
+    static void OnRequestedThemeChanged(object? sender, AppThemeChangedEventArgs args)
     {
         if (sender is Application application)
         {
@@ -110,7 +150,7 @@ public static class GraphicalProfile
         }
     }
 
-    private static void ApplyResources(Application application, AppTheme theme)
+    static void ApplyResources(Application application, AppTheme theme)
     {
         var light = theme == AppTheme.Light;
         AddColor(application, BackgroundResourceKey, light
@@ -157,13 +197,10 @@ public static class GraphicalProfile
             : GraphicalProfileColors.DangerDark);
     }
 
-    private static void AddColor(
-        Application application,
-        string key,
-        string value) =>
+    static void AddColor(Application application, string key, string value) =>
         application.Resources[key] = Color.FromArgb(value);
 
-    private static Color CurrentColor(string key, string fallback)
+    static Color CurrentColor(string key, string fallback)
     {
         if (Application.Current?.Resources.TryGetValue(key, out var value) == true
             && value is Color color)
