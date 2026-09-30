@@ -1,8 +1,9 @@
 using System.Security.Cryptography;
-using Novolis.Maui.GraphicalProfile;
+using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
 using Novolis.Pdf.Abstractions;
 using Novolis.Pdf.Core;
 using Novolis.Pdf.Documents;
+using Novolis.Pdf.Parsing;
 using Novolis.Pdf.Platform;
 using Novolis.Pdf.Rendering;
 using Novolis.Pdf.Rendering.Skia;
@@ -56,7 +57,7 @@ public sealed class PdfViewer : ContentView
         _zoomOutButton = CreateToolbarButton("Zoom −", "PdfZoomOut", ZoomOutAsync);
         _zoomInButton = CreateToolbarButton("Zoom +", "PdfZoomIn", ZoomInAsync);
         _fitButton = CreateToolbarButton("Fit", "PdfFit", FitAsync);
-        _rotateButton = CreateToolbarButton("Rotate", "PdfRotate", RotateAsync);
+        _rotateButton = CreateToolbarButton("Rotate", "PdfRotate", () => RotateAsync());
         _pageLabel = CreateLabel("0 / 0", "PdfPageLabel");
         _pageEntry = new Entry
         {
@@ -94,6 +95,7 @@ public sealed class PdfViewer : ContentView
             var page = new PdfPageView
             {
                 RenderPageAsync = RenderPageCellAsync,
+                RenderFailed = OnPageRenderFailed,
             };
             page.SetBinding(PdfPageView.PageIndexProperty, ".");
             page.SetBinding(
@@ -148,7 +150,7 @@ public sealed class PdfViewer : ContentView
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Star),
             },
-            BackgroundColor = GraphicalProfile.Background,
+            BackgroundColor = Profile.Background,
         };
         layout.Add(header, 0, 0);
         layout.Add(toolbar, 0, 1);
@@ -157,7 +159,7 @@ public sealed class PdfViewer : ContentView
 
         var pinch = new PinchGestureRecognizer();
         pinch.PinchUpdated += OnPinchUpdated;
-        _pageImage.GestureRecognizers.Add(pinch);
+        _pageCollection.GestureRecognizers.Add(pinch);
         ApplyTheme();
         UpdateToolbar();
     }
@@ -170,6 +172,13 @@ public sealed class PdfViewer : ContentView
 
     /// <summary>Current reader session, if a document is open.</summary>
     public PdfDocumentSession? Session => _session;
+
+    /// <summary>Typed catalog for the open document, when one was parsed.</summary>
+    public PdfCatalog? Catalog => _session?.Catalog;
+
+    /// <summary>Reader diagnostics from the current session.</summary>
+    public IReadOnlyList<PdfDiagnosticEntry> Diagnostics =>
+        _session?.Document.Diagnostics ?? [];
 
     /// <summary>Current page index, zero-based.</summary>
     public int CurrentPageIndex => _pageIndex;
@@ -184,7 +193,11 @@ public sealed class PdfViewer : ContentView
     public double Zoom => _zoom;
 
     /// <summary>Current display rotation in degrees.</summary>
-    public int Rotation => _rotation;
+    public new int Rotation => _rotation;
+
+    /// <summary>Width assigned to virtualized page cells.</summary>
+    public double PageWidth =>
+        Math.Max(160, (Width > 0 ? Width - 32 : 320) * _zoom);
 
     /// <summary>Opens a PDF request from a picker or operating-system activation.</summary>
     public async Task OpenAsync(
@@ -196,33 +209,52 @@ public sealed class PdfViewer : ContentView
         try
         {
             await CloseAsync().ConfigureAwait(false);
-            await using var input = await request.OpenReadAsync(cancellationToken).ConfigureAwait(false);
+            await using var input = await StageAsync(
+                    "open-stream",
+                    () => request.OpenReadAsync(cancellationToken).AsTask())
+                .ConfigureAwait(false);
             var buffer = new MemoryStream();
-            await CopyWithLimitAsync(input, buffer, _limits.MaximumDocumentBytes, cancellationToken)
+            await StageAsync(
+                    "copy-limit",
+                    () => CopyWithLimitAsync(
+                        input,
+                        buffer,
+                        _limits.MaximumDocumentBytes,
+                        cancellationToken))
                 .ConfigureAwait(false);
             buffer.Position = 0;
             var stableId = request.Descriptor.StableId
                 ?? Convert.ToHexString(SHA256.HashData(buffer.ToArray()));
             buffer.Position = 0;
             var source = PdfSources.FromStream(buffer, request.Descriptor.DisplayName, stableId);
-            _session = await PdfDocumentSession.OpenAsync(source, _limits, cancellationToken)
+            _session = await StageAsync(
+                    "parse",
+                    () => PdfDocumentSession.OpenAsync(source, _limits, cancellationToken).AsTask())
                 .ConfigureAwait(false);
-            _pages = PdfPageTree.Resolve(_session.Document, _limits);
+            _pages = Stage(
+                "page-tree",
+                () => PdfPageTree.Resolve(_session.Document, _limits));
             _textSpans = [];
             _pageIndex = 0;
             _zoom = 1;
             _rotation = 0;
             if (_stateStore is not null)
             {
-                await _stateStore.RememberAsync(
-                        new PdfRecentDocument(
-                            stableId,
-                            request.Descriptor.DisplayName,
-                            request.Descriptor.StableId ?? request.Descriptor.DisplayName,
-                            DateTimeOffset.UtcNow),
-                        cancellationToken)
+                await StageAsync(
+                        "remember-recent",
+                        () => _stateStore.RememberAsync(
+                                new PdfRecentDocument(
+                                    stableId,
+                                    request.Descriptor.DisplayName,
+                                    request.Descriptor.StableId ?? request.Descriptor.DisplayName,
+                                    DateTimeOffset.UtcNow),
+                                cancellationToken)
+                            .AsTask())
                     .ConfigureAwait(false);
-                if (await _stateStore.LoadPositionAsync(stableId, cancellationToken).ConfigureAwait(false)
+                if (await StageAsync(
+                            "load-position",
+                            () => _stateStore.LoadPositionAsync(stableId, cancellationToken).AsTask())
+                        .ConfigureAwait(false)
                     is { } position)
                 {
                     _pageIndex = Math.Clamp(position.PageIndex, 0, Math.Max(0, _pages.Count - 1));
@@ -237,7 +269,7 @@ public sealed class PdfViewer : ContentView
                 _titleLabel.Text = _session.Document.Info.Title
                     ?? _session.Document.Info.Source.DisplayName;
                 ApplyTheme();
-                await RenderCurrentPageAsync(cancellationToken);
+                await RenderCurrentPageAsync(cancellationToken).ConfigureAwait(false);
             });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -288,6 +320,7 @@ public sealed class PdfViewer : ContentView
             position: ScrollToPosition.Center,
             animate: true);
         UpdateToolbar();
+        PageChanged?.Invoke(this, EventArgs.Empty);
         return SavePositionAsync(cancellationToken);
     }
 
@@ -310,53 +343,128 @@ public sealed class PdfViewer : ContentView
     public async Task SetZoomAsync(double zoom, CancellationToken cancellationToken = default)
     {
         _zoom = Math.Clamp(zoom, 0.5, 4);
-        ApplyImageSize();
+        OnPropertyChanged(nameof(PageWidth));
         await SavePositionAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Handles common reader keyboard commands without leaking OS key types.</summary>
+    public bool TryHandleKey(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key) || _isBusy || _pages.Count == 0)
+            return false;
+
+        switch (key)
+        {
+            case "Left" or "PageUp":
+                _ = GoPreviousAsync();
+                return true;
+            case "Right" or "PageDown":
+                _ = GoNextAsync();
+                return true;
+            case "OemPlus" or "Add":
+                _ = ZoomInAsync();
+                return true;
+            case "OemMinus" or "Subtract":
+                _ = ZoomOutAsync();
+                return true;
+            case "F":
+                _ = FitAsync();
+                return true;
+            case "R":
+                _ = RotateAsync();
+                return true;
+            default:
+                return false;
+        }
     }
 
     /// <summary>Rotates the page clockwise by 90 degrees.</summary>
     public async Task RotateAsync(CancellationToken cancellationToken = default)
     {
         _rotation = NormalizeRotation(_rotation + 90);
-        await RenderCurrentPageAsync(cancellationToken).ConfigureAwait(false);
+        var items = _pageCollection.ItemsSource;
+        await MainThread.InvokeOnMainThreadAsync(() =>
+        {
+            _pageCollection.ItemsSource = null;
+            _pageCollection.ItemsSource = items;
+            _pageCollection.ScrollTo(
+                _pageIndex,
+                position: ScrollToPosition.Center,
+                animate: false);
+        });
+        await SavePositionAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task RenderCurrentPageAsync(CancellationToken cancellationToken)
+    private Task RenderCurrentPageAsync(CancellationToken cancellationToken)
     {
-        if (_session is null || _pages.Count == 0 || _isBusy)
-            return;
+        if (_session is null || _pages.Count == 0)
+            return Task.CompletedTask;
 
-        SetBusy(true, $"Rendering page {_pageIndex + 1} of {_pages.Count}…");
+        SetStatus($"Page {_pageIndex + 1} of {_pages.Count}");
+        _pageCollection.ScrollTo(
+            _pageIndex,
+            position: ScrollToPosition.Center,
+            animate: false);
+        UpdateToolbar();
+        PageChanged?.Invoke(this, EventArgs.Empty);
+        return SavePositionAsync(cancellationToken);
+    }
+
+    private async Task<PdfRenderedPage> RenderPageCellAsync(
+        int pageIndex,
+        CancellationToken cancellationToken)
+    {
+        if (_session is null)
+            throw new InvalidOperationException("No PDF document is open.");
+        return await StageAsync(
+                $"render-page-{pageIndex}",
+                () => _renderer.RenderAsync(
+                        _session.Document,
+                        new PdfRenderRequest(
+                            pageIndex,
+                            DefaultDpi,
+                            Rotation: _rotation),
+                        cancellationToken)
+                    .AsTask())
+            .ConfigureAwait(false);
+    }
+
+    private void OnPageRenderFailed(Exception exception)
+    {
+        SetStatus("A page could not be rendered.");
+        Error?.Invoke(this, new PdfViewerErrorEventArgs(exception));
+    }
+
+    private async void GoToEnteredPageAsync()
+    {
+        if (int.TryParse(_pageEntry.Text, out var pageNumber))
+            await GoToPageAsync(pageNumber - 1).ConfigureAwait(false);
+        _pageEntry.Text = string.Empty;
+    }
+
+    private async void SearchAsync()
+    {
+        if (_session is null || string.IsNullOrWhiteSpace(_searchBar.Text))
+            return;
         try
         {
-            var request = new PdfRenderRequest(_pageIndex, DefaultDpi);
-            var rendered = await _renderer.RenderAsync(
-                    _session.Document,
-                    request,
-                    cancellationToken)
+            _textSpans = await Task.Run(
+                    () => _textExtractor.ExtractDocument(_session.Document))
                 .ConfigureAwait(false);
-            _currentPageBytes = rendered.PngBytes;
+            var matches = _textSearch.Search(_textSpans, _searchBar.Text);
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
-                _pageImage.Source = ImageSource.FromStream(() =>
-                    new MemoryStream(_currentPageBytes, writable: false));
-                ApplyImageSize();
-                SetStatus(rendered.Status == PdfRenderStatus.Rendered
-                    ? $"Page {_pageIndex + 1} of {_pages.Count}"
-                    : $"Page {_pageIndex + 1} of {_pages.Count} · rendered with warnings");
-                UpdateToolbar();
-                PageChanged?.Invoke(this, EventArgs.Empty);
+                _searchStatus.Text = matches.Count == 0
+                    ? "No matches"
+                    : $"{matches.Count} match{(matches.Count == 1 ? string.Empty : "es")}";
+                if (matches.Count > 0)
+                    _ = GoToPageAsync(matches[0].PageIndex);
             });
-            await SavePositionAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is InvalidDataException or PdfReaderException)
         {
-            SetStatus("This page could not be rendered.");
+            _searchStatus.Text = "Search unavailable";
             Error?.Invoke(this, new PdfViewerErrorEventArgs(exception));
-        }
-        finally
-        {
-            SetBusy(false);
         }
     }
 
@@ -379,39 +487,92 @@ public sealed class PdfViewer : ContentView
             _ = SetZoomAsync(args.Scale * _zoom);
     }
 
-    private void ApplyImageSize()
-    {
-        if (_currentPageBytes is null || _pages.Count == 0)
-            return;
-        var page = _pages[_pageIndex].Info;
-        var availableWidth = Math.Max(160, _pageScroll.Width - 28);
-        var width = Math.Max(160, availableWidth * _zoom);
-        var aspect = page.DisplayHeight <= 0 ? 1 : page.DisplayWidth / page.DisplayHeight;
-        _pageImage.WidthRequest = width;
-        _pageImage.HeightRequest = width / Math.Max(0.1, aspect);
-    }
-
     private void ApplyTheme()
     {
-        BackgroundColor = GraphicalProfile.Background;
-        _titleLabel.TextColor = GraphicalProfile.Text;
-        _statusLabel.TextColor = GraphicalProfile.Muted;
-        foreach (var button in new[] { _previousButton, _nextButton, _zoomOutButton, _zoomInButton, _fitButton })
+        BackgroundColor = Profile.Background;
+        _titleLabel.TextColor = Profile.Text;
+        _statusLabel.TextColor = Profile.Muted;
+        foreach (var button in new[]
+                 {
+                     _previousButton,
+                     _nextButton,
+                     _zoomOutButton,
+                     _zoomInButton,
+                     _fitButton,
+                     _rotateButton,
+                 })
         {
-            button.BackgroundColor = GraphicalProfile.Action;
-            button.TextColor = GraphicalProfile.OnAction;
+            button.BackgroundColor = Profile.Action;
+            button.TextColor = Profile.OnAction;
         }
+        _pageEntry.TextColor = Profile.Text;
+        _searchBar.TextColor = Profile.Text;
+        _searchBar.BackgroundColor = Profile.Raised;
+        _searchStatus.TextColor = Profile.Muted;
     }
 
     private void SetBusy(bool busy, string? status = null)
     {
         _isBusy = busy;
+        if (MainThread.IsMainThread)
+            ApplyBusy(busy, status);
+        else
+            MainThread.BeginInvokeOnMainThread(() => ApplyBusy(busy, status));
+    }
+
+    private void ApplyBusy(bool busy, string? status)
+    {
         if (status is not null)
-            SetStatus(status);
+            _statusLabel.Text = status;
         UpdateToolbar();
     }
 
-    private void SetStatus(string status) => _statusLabel.Text = status;
+    private void SetStatus(string status)
+    {
+        if (MainThread.IsMainThread)
+            _statusLabel.Text = status;
+        else
+            MainThread.BeginInvokeOnMainThread(() => _statusLabel.Text = status);
+    }
+
+    private static T Stage<T>(string stage, Func<T> work)
+    {
+        try
+        {
+            return work();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw WrapStage(stage, exception);
+        }
+    }
+
+    private static async Task<T> StageAsync<T>(string stage, Func<Task<T>> work)
+    {
+        try
+        {
+            return await work().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw WrapStage(stage, exception);
+        }
+    }
+
+    private static Task StageAsync(string stage, Func<Task> work) =>
+        StageAsync(stage, async () =>
+        {
+            await work().ConfigureAwait(false);
+            return true;
+        });
+
+    private static PdfReaderException WrapStage(string stage, Exception exception) =>
+        new(
+            new PdfDiagnosticEntry(
+                PdfDiagnosticSeverity.Error,
+                "PDFOPEN",
+                $"Open failed at {stage}: {exception.Message}",
+                Exception: exception));
 
     private void UpdateToolbar()
     {
@@ -421,6 +582,7 @@ public sealed class PdfViewer : ContentView
         _zoomOutButton.IsEnabled = enabled && _zoom > 0.5;
         _zoomInButton.IsEnabled = enabled && _zoom < 4;
         _fitButton.IsEnabled = enabled;
+        _rotateButton.IsEnabled = enabled;
         _pageLabel.Text = $"{(_pages.Count == 0 ? 0 : _pageIndex + 1)} / {_pages.Count}";
     }
 
@@ -438,6 +600,7 @@ public sealed class PdfViewer : ContentView
             CornerRadius = 14,
             Padding = new Thickness(12, 7),
         };
+        SemanticProperties.SetDescription(button, text);
         button.Clicked += async (_, _) => await action().ConfigureAwait(false);
         return button;
     }

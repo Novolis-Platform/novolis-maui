@@ -1,4 +1,4 @@
-using Novolis.Maui.GraphicalProfile;
+using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
 using Novolis.Pdf.Rendering;
 
 namespace Novolis.Maui.PdfViewer;
@@ -52,15 +52,18 @@ public sealed class PdfPageView : ContentView
     /// <summary>Provides the viewer's bounded page rendering callback.</summary>
     public Func<int, CancellationToken, Task<PdfRenderedPage>>? RenderPageAsync { get; set; }
 
+    /// <summary>Receives a render failure for the current cell.</summary>
+    public Action<Exception>? RenderFailed { get; set; }
+
     /// <summary>Creates a virtualized page cell.</summary>
     public PdfPageView()
     {
         AutomationId = "PdfPageView";
         Padding = new Thickness(8);
-        BackgroundColor = GraphicalProfile.Surface;
+        BackgroundColor = Profile.Surface;
         Content = new Border
         {
-            Stroke = new SolidColorBrush(GraphicalProfile.Border),
+            Stroke = new SolidColorBrush(Profile.Border),
             StrokeThickness = 1,
             Padding = new Thickness(4),
             Content = _image,
@@ -106,6 +109,10 @@ public sealed class PdfPageView : ContentView
         }
         catch (OperationCanceledException) when (_renderCancellation.IsCancellationRequested)
         {
+        }
+        catch (Exception exception)
+        {
+            RenderFailed?.Invoke(exception);
         }
     }
 
