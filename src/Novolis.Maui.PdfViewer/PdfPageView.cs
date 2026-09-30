@@ -14,6 +14,8 @@ public sealed class PdfPageView : ContentView
     };
     private CancellationTokenSource? _renderCancellation;
     private byte[]? _pngBytes;
+    private int _pixelWidth;
+    private int _pixelHeight;
 
     /// <summary>Identifies the page index rendered by this cell.</summary>
     public static readonly BindableProperty PageIndexProperty =
@@ -99,6 +101,8 @@ public sealed class PdfPageView : ContentView
             if (pageIndex != PageIndex || _renderCancellation.IsCancellationRequested)
                 return;
             _pngBytes = rendered.PngBytes;
+            _pixelWidth = rendered.PixelWidth;
+            _pixelHeight = rendered.PixelHeight;
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 _image.Source = ImageSource.FromStream(
@@ -121,9 +125,12 @@ public sealed class PdfPageView : ContentView
         if (PageWidth <= 0)
             return;
         WidthRequest = PageWidth;
-        _image.WidthRequest = Math.Max(80, PageWidth - 24);
-        if (_pngBytes is null)
-            _image.HeightRequest = Math.Max(120, PageWidth * 1.414);
+        var imageWidth = Math.Max(80, PageWidth - 24);
+        _image.WidthRequest = imageWidth;
+        _image.HeightRequest = _pixelWidth > 0 && _pixelHeight > 0
+            ? imageWidth * _pixelHeight / _pixelWidth
+            : Math.Max(120, imageWidth * 1.414);
+        HeightRequest = _image.HeightRequest + 24;
     }
 
     private void CancelRender()

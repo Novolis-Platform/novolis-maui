@@ -15,6 +15,8 @@ namespace Novolis.Maui.PdfViewer;
 public sealed class PdfViewer : ContentView
 {
     private const double DefaultDpi = 120;
+    private const double ThumbnailDpi = 56;
+    private const double RailWidth = 156;
     private readonly PdfLimits _limits;
     private readonly IPdfDocumentStateStore? _stateStore;
     private readonly PdfSkiaPageRenderer _renderer;
@@ -30,7 +32,11 @@ public sealed class PdfViewer : ContentView
     private readonly Label _searchStatus;
     private readonly Label _titleLabel;
     private readonly Label _statusLabel;
-    private readonly CollectionView _pageCollection;
+    private readonly CollectionView _pageRail;
+    private readonly PdfPageView _readingPage;
+    private readonly ScrollView _readingScroll;
+    private readonly Grid _readingHost;
+    private readonly Grid _workspace;
     private readonly PdfTextExtractor _textExtractor;
     private readonly PdfTextSearch _textSearch = new();
     private PdfDocumentSession? _session;
@@ -40,6 +46,7 @@ public sealed class PdfViewer : ContentView
     private double _zoom = 1;
     private int _rotation;
     private bool _isBusy;
+    private bool _railSync;
 
     /// <summary>Creates a viewer with optional local reading-position persistence.</summary>
     public PdfViewer(
@@ -80,30 +87,69 @@ public sealed class PdfViewer : ContentView
         _searchStatus = CreateLabel(string.Empty, "PdfSearchStatus");
         _titleLabel = CreateLabel("No document open", "PdfDocumentTitle");
         _statusLabel = CreateLabel("Choose a local PDF to begin.", "PdfStatus");
-        _pageCollection = new CollectionView
+        _pageRail = new CollectionView
         {
-            AutomationId = "PdfPageCollection",
-            SelectionMode = SelectionMode.None,
+            AutomationId = "PdfPageRail",
+            SelectionMode = SelectionMode.Single,
+            WidthRequest = RailWidth,
+            BackgroundColor = Profile.Surface,
             VerticalScrollBarVisibility = ScrollBarVisibility.Always,
             ItemsLayout = new LinearItemsLayout(ItemsLayoutOrientation.Vertical)
             {
-                ItemSpacing = 12,
+                ItemSpacing = 8,
             },
         };
-        _pageCollection.ItemTemplate = new DataTemplate(() =>
+        _pageRail.ItemTemplate = new DataTemplate(() =>
         {
             var page = new PdfPageView
             {
-                RenderPageAsync = RenderPageCellAsync,
+                RenderPageAsync = RenderThumbnailAsync,
                 RenderFailed = OnPageRenderFailed,
+                PageWidth = 128,
             };
             page.SetBinding(PdfPageView.PageIndexProperty, ".");
-            page.SetBinding(
-                PdfPageView.PageWidthProperty,
-                new Binding(nameof(PageWidth), source: this));
             return page;
         });
-        SizeChanged += (_, _) => OnPropertyChanged(nameof(PageWidth));
+        _pageRail.SelectionChanged += OnRailSelectionChanged;
+        _readingPage = new PdfPageView
+        {
+            AutomationId = "PdfReadingPage",
+            HorizontalOptions = LayoutOptions.Center,
+            VerticalOptions = LayoutOptions.Center,
+            RenderPageAsync = RenderReadingAsync,
+            RenderFailed = OnPageRenderFailed,
+        };
+        _readingPage.SetBinding(
+            PdfPageView.PageWidthProperty,
+            new Binding(nameof(ReadingPageWidth), source: this));
+        _readingScroll = new ScrollView
+        {
+            AutomationId = "PdfReadingScroll",
+            Orientation = ScrollOrientation.Both,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Always,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Always,
+            Content = _readingPage,
+        };
+        _readingHost = new Grid { BackgroundColor = Profile.Background };
+        _readingHost.Add(_readingScroll);
+        _readingHost.SizeChanged += (_, _) => RefreshFitSize();
+        _workspace = new Grid
+        {
+            ColumnSpacing = 8,
+            Padding = new Thickness(8, 0, 8, 8),
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(new GridLength(RailWidth)),
+                new ColumnDefinition(GridLength.Star),
+            },
+        };
+        _workspace.Add(_pageRail, 0, 0);
+        _workspace.Add(_readingHost, 1, 0);
+        SizeChanged += (_, _) =>
+        {
+            ApplyWorkspaceColumns();
+            RefreshFitSize();
+        };
 
         var toolbarItems = new HorizontalStackLayout
         {
@@ -154,12 +200,13 @@ public sealed class PdfViewer : ContentView
         };
         layout.Add(header, 0, 0);
         layout.Add(toolbar, 0, 1);
-        layout.Add(_pageCollection, 0, 2);
+        layout.Add(_workspace, 0, 2);
         Content = layout;
 
         var pinch = new PinchGestureRecognizer();
         pinch.PinchUpdated += OnPinchUpdated;
-        _pageCollection.GestureRecognizers.Add(pinch);
+        _readingScroll.GestureRecognizers.Add(pinch);
+        ApplyWorkspaceColumns();
         ApplyTheme();
         UpdateToolbar();
     }
@@ -195,9 +242,55 @@ public sealed class PdfViewer : ContentView
     /// <summary>Current display rotation in degrees.</summary>
     public new int Rotation => _rotation;
 
-    /// <summary>Width assigned to virtualized page cells.</summary>
-    public double PageWidth =>
-        Math.Max(160, (Width > 0 ? Width - 32 : 320) * _zoom);
+    /// <summary>Width assigned to the current reading page after Fit.</summary>
+    public double PageWidth => ReadingPageWidth;
+
+    /// <summary>Width of the current page so the whole page fits the reading pane.</summary>
+    public double ReadingPageWidth
+    {
+        get
+        {
+            var pageWidth = 612d;
+            var pageHeight = 792d;
+            if (_pages.Count > 0)
+            {
+                var info = _pages[Math.Clamp(_pageIndex, 0, _pages.Count - 1)].Info;
+                pageWidth = info.DisplayWidth;
+                pageHeight = info.DisplayHeight;
+            }
+
+            return PdfPageFit.PageWidth(
+                ReadingPaneWidth,
+                ReadingPaneHeight,
+                pageWidth,
+                pageHeight,
+                _zoom);
+        }
+    }
+
+    private bool ShowPageRail =>
+        OperatingSystem.IsWindows() || Width >= 800;
+
+    private double ReadingPaneWidth
+    {
+        get
+        {
+            if (_readingHost.Width > 1)
+                return Math.Max(160, _readingHost.Width - 16);
+            var fallback = Width > 1 ? Width : 720;
+            return Math.Max(160, fallback - (ShowPageRail ? RailWidth + 32 : 32));
+        }
+    }
+
+    private double ReadingPaneHeight
+    {
+        get
+        {
+            if (_readingHost.Height > 1)
+                return Math.Max(160, _readingHost.Height - 16);
+            return Math.Max(160, (Height > 1 ? Height : 720) - 160);
+        }
+    }
 
     /// <summary>Opens a PDF request from a picker or operating-system activation.</summary>
     public async Task OpenAsync(
@@ -265,10 +358,14 @@ public sealed class PdfViewer : ContentView
 
             await MainThread.InvokeOnMainThreadAsync(async () =>
             {
-                _pageCollection.ItemsSource = Enumerable.Range(0, _pages.Count).ToArray();
+                _pageRail.ItemsSource = Enumerable.Range(0, _pages.Count).ToArray();
+                _readingPage.PageIndex = _pageIndex;
+                SyncRailSelection();
                 _titleLabel.Text = _session.Document.Info.Title
                     ?? _session.Document.Info.Source.DisplayName;
                 ApplyTheme();
+                ApplyWorkspaceColumns();
+                RefreshFitSize();
                 await RenderCurrentPageAsync(cancellationToken).ConfigureAwait(false);
             });
         }
@@ -300,7 +397,8 @@ public sealed class PdfViewer : ContentView
         _textSpans = [];
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
-            _pageCollection.ItemsSource = null;
+            _pageRail.ItemsSource = null;
+            _readingPage.PageIndex = -1;
             _searchBar.Text = string.Empty;
             _searchStatus.Text = string.Empty;
             _titleLabel.Text = "No document open";
@@ -315,10 +413,10 @@ public sealed class PdfViewer : ContentView
         if (_pages.Count == 0)
             return Task.CompletedTask;
         _pageIndex = Math.Clamp(pageIndex, 0, _pages.Count - 1);
-        _pageCollection.ScrollTo(
-            _pageIndex,
-            position: ScrollToPosition.Center,
-            animate: true);
+        _readingPage.PageIndex = _pageIndex;
+        SyncRailSelection();
+        _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: true);
+        RefreshFitSize();
         UpdateToolbar();
         PageChanged?.Invoke(this, EventArgs.Empty);
         return SavePositionAsync(cancellationToken);
@@ -336,14 +434,23 @@ public sealed class PdfViewer : ContentView
     /// <summary>Decreases the page scale.</summary>
     public Task ZoomOutAsync() => SetZoomAsync(_zoom - 0.25);
 
-    /// <summary>Fits the page to the available viewer width.</summary>
-    public Task FitAsync() => SetZoomAsync(1);
+    /// <summary>Fits the current page entirely inside the reading pane.</summary>
+    public async Task FitAsync()
+    {
+        _zoom = 1;
+        await MainThread.InvokeOnMainThreadAsync(() =>
+        {
+            RefreshFitSize();
+            _ = _readingScroll.ScrollToAsync(0, 0, false);
+        }).ConfigureAwait(false);
+        await SavePositionAsync(CancellationToken.None).ConfigureAwait(false);
+    }
 
-    /// <summary>Sets a bounded page scale.</summary>
+    /// <summary>Sets a bounded page scale relative to Fit.</summary>
     public async Task SetZoomAsync(double zoom, CancellationToken cancellationToken = default)
     {
         _zoom = Math.Clamp(zoom, 0.5, 4);
-        OnPropertyChanged(nameof(PageWidth));
+        RefreshFitSize();
         await SavePositionAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -382,15 +489,16 @@ public sealed class PdfViewer : ContentView
     public async Task RotateAsync(CancellationToken cancellationToken = default)
     {
         _rotation = NormalizeRotation(_rotation + 90);
-        var items = _pageCollection.ItemsSource;
+        var items = _pageRail.ItemsSource;
+        var pageIndex = _readingPage.PageIndex;
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
-            _pageCollection.ItemsSource = null;
-            _pageCollection.ItemsSource = items;
-            _pageCollection.ScrollTo(
-                _pageIndex,
-                position: ScrollToPosition.Center,
-                animate: false);
+            _readingPage.PageIndex = -1;
+            _readingPage.PageIndex = pageIndex;
+            _pageRail.ItemsSource = null;
+            _pageRail.ItemsSource = items;
+            SyncRailSelection();
+            RefreshFitSize();
         });
         await SavePositionAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -401,17 +509,33 @@ public sealed class PdfViewer : ContentView
             return Task.CompletedTask;
 
         SetStatus($"Page {_pageIndex + 1} of {_pages.Count}");
-        _pageCollection.ScrollTo(
-            _pageIndex,
-            position: ScrollToPosition.Center,
-            animate: false);
+        _readingPage.PageIndex = _pageIndex;
+        SyncRailSelection();
+        _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: false);
         UpdateToolbar();
         PageChanged?.Invoke(this, EventArgs.Empty);
         return SavePositionAsync(cancellationToken);
     }
 
-    private async Task<PdfRenderedPage> RenderPageCellAsync(
+    private Task<PdfRenderedPage> RenderThumbnailAsync(
         int pageIndex,
+        CancellationToken cancellationToken) =>
+        RenderPageAsync(pageIndex, ThumbnailDpi, cancellationToken);
+
+    private Task<PdfRenderedPage> RenderReadingAsync(
+        int pageIndex,
+        CancellationToken cancellationToken)
+    {
+        var pageWidth = pageIndex >= 0 && pageIndex < _pages.Count
+            ? _pages[pageIndex].Info.DisplayWidth
+            : 612;
+        var dpi = Math.Clamp(72d * (ReadingPageWidth / Math.Max(1, pageWidth)), 72, 192);
+        return RenderPageAsync(pageIndex, dpi, cancellationToken);
+    }
+
+    private async Task<PdfRenderedPage> RenderPageAsync(
+        int pageIndex,
+        double dotsPerInch,
         CancellationToken cancellationToken)
     {
         if (_session is null)
@@ -422,11 +546,40 @@ public sealed class PdfViewer : ContentView
                         _session.Document,
                         new PdfRenderRequest(
                             pageIndex,
-                            DefaultDpi,
+                            dotsPerInch,
                             Rotation: _rotation),
                         cancellationToken)
                     .AsTask())
             .ConfigureAwait(false);
+    }
+
+    private void RefreshFitSize()
+    {
+        OnPropertyChanged(nameof(ReadingPageWidth));
+        OnPropertyChanged(nameof(PageWidth));
+    }
+
+    private void ApplyWorkspaceColumns()
+    {
+        var showRail = ShowPageRail;
+        _pageRail.IsVisible = showRail;
+        _workspace.ColumnDefinitions[0].Width = showRail
+            ? new GridLength(RailWidth)
+            : new GridLength(0);
+    }
+
+    private void SyncRailSelection()
+    {
+        _railSync = true;
+        _pageRail.SelectedItem = _pages.Count == 0 ? null : _pageIndex;
+        _railSync = false;
+    }
+
+    private void OnRailSelectionChanged(object? sender, SelectionChangedEventArgs args)
+    {
+        if (_railSync || args.CurrentSelection.FirstOrDefault() is not int pageIndex)
+            return;
+        _ = GoToPageAsync(pageIndex);
     }
 
     private void OnPageRenderFailed(Exception exception)
@@ -490,6 +643,8 @@ public sealed class PdfViewer : ContentView
     private void ApplyTheme()
     {
         BackgroundColor = Profile.Background;
+        _readingHost.BackgroundColor = Profile.Background;
+        _pageRail.BackgroundColor = Profile.Surface;
         _titleLabel.TextColor = Profile.Text;
         _statusLabel.TextColor = Profile.Muted;
         foreach (var button in new[]
