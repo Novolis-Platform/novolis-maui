@@ -48,7 +48,8 @@ public sealed class PdfPageView : ContentView
             {
                 var page = (PdfPageView)bindable;
                 page.ApplySize();
-                if (System.Math.Abs((double)oldValue - (double)newValue) >= 1)
+                if (!page.DeferRaster
+                    && System.Math.Abs((double)oldValue - (double)newValue) >= 24)
                     page.QueueRender();
             });
 
@@ -82,6 +83,9 @@ public sealed class PdfPageView : ContentView
         get => (double)GetValue(PageHeightProperty);
         set => SetValue(PageHeightProperty, value);
     }
+
+    /// <summary>When true, size changes stretch the last paint instead of re-rasterizing.</summary>
+    public bool DeferRaster { get; set; }
 
     /// <summary>Provides the viewer's bounded page rendering callback.</summary>
     public Func<int, CancellationToken, Task<PdfRenderedPage>>? RenderPageAsync { get; set; }
@@ -132,9 +136,17 @@ public sealed class PdfPageView : ContentView
         base.OnHandlerChanged();
     }
 
+    /// <summary>Paints this cell if a page is bound.</summary>
+    public void RequestRender()
+    {
+        if (DeferRaster)
+            return;
+        QueueRender();
+    }
+
     private void QueueRender()
     {
-        if (Handler is null || PageIndex < 0 || RenderPageAsync is null)
+        if (DeferRaster || Handler is null || PageIndex < 0 || RenderPageAsync is null)
             return;
         _ = RenderAsync(PageIndex);
     }
@@ -159,12 +171,8 @@ public sealed class PdfPageView : ContentView
                 _placeholder.TextColor = Profile.Text;
                 _image.IsVisible = true;
                 _image.Opacity = 1;
-                if (!OperatingSystem.IsAndroid())
-                    _image.Source = null;
                 _image.Source = CreatePngSource(_pngBytes);
                 ApplySize();
-                _image.InvalidateMeasure();
-                InvalidateMeasure();
                 SemanticProperties.SetDescription(this, $"PDF page {pageIndex + 1}");
             });
         }
@@ -194,6 +202,16 @@ public sealed class PdfPageView : ContentView
                 ? paperWidth * _pixelHeight / _pixelWidth
                 : paperWidth * 1.5;
         paperHeight = System.Math.Clamp(paperHeight, 80, 4096);
+        if (OperatingSystem.IsAndroid())
+        {
+            var maxDip = PdfViewerLayout.MaxDisplayDip;
+            if (paperWidth > maxDip || paperHeight > maxDip)
+            {
+                var shrink = maxDip / System.Math.Max(paperWidth, paperHeight);
+                paperWidth *= shrink;
+                paperHeight *= shrink;
+            }
+        }
         LockSize(this, paperWidth, paperHeight);
         LockSize(_paper, paperWidth, paperHeight);
         LockSize(_image, paperWidth, paperHeight);
@@ -229,15 +247,7 @@ public sealed class PdfPageView : ContentView
             _androidCachePath = Path.Combine(cacheRoot, $"novolis-pdf-cell-{Guid.NewGuid():N}.png");
             File.WriteAllBytes(_androidCachePath, png);
             if (previous is not null)
-            {
-                try
-                {
-                    File.Delete(previous);
-                }
-                catch (IOException)
-                {
-                }
-            }
+                _ = DeleteLaterAsync(previous);
 
             return new FileImageSource { File = _androidCachePath };
         }
@@ -251,5 +261,17 @@ public sealed class PdfPageView : ContentView
         _renderCancellation?.Cancel();
         _renderCancellation?.Dispose();
         _renderCancellation = null;
+    }
+
+    private static async Task DeleteLaterAsync(string path)
+    {
+        try
+        {
+            await Task.Delay(2000).ConfigureAwait(false);
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
     }
 }

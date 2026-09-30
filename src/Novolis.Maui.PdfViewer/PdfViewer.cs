@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using Microsoft.Maui.Devices;
 using Microsoft.Maui.Layouts;
 using Novolis.Maui.GraphicalProfile;
 using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
@@ -17,7 +16,6 @@ namespace Novolis.Maui.PdfViewer;
 /// <summary>Reusable local PDF page viewer for MAUI Windows and Android hosts.</summary>
 public sealed class PdfViewer : ContentView
 {
-    private const double DefaultDpi = 120;
     private const double ThumbnailDpi = 56;
     private const double RailWidth = 156;
     private FlexLayout? _toolbar;
@@ -41,12 +39,10 @@ public sealed class PdfViewer : ContentView
     private readonly Label _searchStatus;
     private readonly Label _titleLabel;
     private readonly Label _statusLabel;
+    private readonly Label _emptyHint;
     private readonly CollectionView _pageRail;
     private readonly CollectionView _outlineList;
-    private readonly ScrollView _readingScroll;
-    private readonly VerticalStackLayout _readingStrip;
-    private readonly List<Grid> _readingSlots = [];
-    private readonly List<PdfPageView> _readingPages = [];
+    private readonly PdfReadingSurface _readingSurface;
     private readonly Grid _sidebar;
     private readonly Grid _workspace;
     private readonly Grid _viewerHeader;
@@ -64,15 +60,11 @@ public sealed class PdfViewer : ContentView
     private bool _railSync;
     private double _paneWidth = 720;
     private double _paneHeight = 720;
-    private double _pinchStart = 1;
     private PdfFitKind _fitKind = PdfFitKind.Page;
     private bool _fitUserChosen;
-    private bool _reloadingStack;
-    private bool _syncingScroll;
-    private int _windowStart;
-    private IDispatcherTimer? _scrollSettle;
     private bool _showOutline;
     private bool _sidebarOpen;
+    private bool _phoneToolbar;
     private IReadOnlyList<PdfOutlineItem> _outlines = [];
 
     /// <summary>Creates a viewer with optional local reading-position persistence.</summary>
@@ -119,6 +111,13 @@ public sealed class PdfViewer : ContentView
         _searchStatus = CreateLabel(string.Empty, "PdfSearchStatus");
         _titleLabel = CreateLabel("No document open", "PdfDocumentTitle");
         _statusLabel = CreateLabel("Choose a local PDF to begin.", "PdfStatus");
+        _emptyHint = CreateLabel("Open a PDF", "PdfEmptyHint");
+        _emptyHint.FontSize = 16;
+        _emptyHint.HorizontalTextAlignment = TextAlignment.Center;
+        _emptyHint.VerticalTextAlignment = TextAlignment.Center;
+        _emptyHint.HorizontalOptions = LayoutOptions.Fill;
+        _emptyHint.VerticalOptions = LayoutOptions.Center;
+        _emptyHint.InputTransparent = true;
         _pageRail = new CollectionView
         {
             AutomationId = "PdfPageRail",
@@ -189,33 +188,14 @@ public sealed class PdfViewer : ContentView
         {
             Command = new Command(CloseCompactSidebar),
         });
-        _readingStrip = new VerticalStackLayout
+        _readingSurface = new PdfReadingSurface
         {
-            Spacing = 0,
-            BackgroundColor = Profile.Background,
-        };
-        for (var slot = 0; slot < PdfPageTurn.WindowSize; slot++)
-            _readingStrip.Add(CreateReadingSlot());
-        _readingScroll = new ScrollView
-        {
-            AutomationId = "PdfReadingPage",
-            BackgroundColor = Profile.Background,
-            Orientation = ScrollOrientation.Vertical,
             HorizontalOptions = LayoutOptions.Fill,
             VerticalOptions = LayoutOptions.Fill,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Never,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Default,
-            Content = _readingStrip,
         };
-        _readingScroll.SizeChanged += (_, _) => UpdatePaneFromReadingStack();
-        _readingScroll.Scrolled += OnReadingScrolled;
-        var pinch = new PinchGestureRecognizer();
-        pinch.PinchUpdated += OnPinchUpdated;
-        _readingScroll.GestureRecognizers.Add(pinch);
-        _scrollSettle = Dispatcher.CreateTimer();
-        _scrollSettle.Interval = TimeSpan.FromMilliseconds(140);
-        _scrollSettle.IsRepeating = false;
-        _scrollSettle.Tick += (_, _) => _ = SettleReadingScrollAsync();
+        _readingSurface.PageChanged += OnSurfacePageChanged;
+        _readingSurface.ZoomChanged += OnSurfaceZoomChanged;
+        _readingSurface.SizeChanged += (_, _) => UpdatePaneFromReadingStack();
         _workspace = new Grid
         {
             ColumnSpacing = 8,
@@ -226,7 +206,9 @@ public sealed class PdfViewer : ContentView
                 new ColumnDefinition(GridLength.Star),
             },
         };
-        _workspace.Add(_readingScroll, 1, 0);
+        _workspace.IsClippedToBounds = true;
+        _workspace.Add(_emptyHint, 1, 0);
+        _workspace.Add(_readingSurface, 1, 0);
         _workspace.Add(_sidebarScrim, 0, 0);
         _workspace.Add(_sidebar, 0, 0);
         SizeChanged += (_, _) => ApplyWorkspaceColumns();
@@ -288,6 +270,7 @@ public sealed class PdfViewer : ContentView
         ApplyWorkspaceColumns();
         ApplyTheme();
         UpdateToolbar();
+        ShowEmptyHint();
     }
 
     /// <summary>Raised when the compact Open control is used.</summary>
@@ -358,34 +341,17 @@ public sealed class PdfViewer : ContentView
             return true;
         }
 
-        return false;
+        _readingSurface.ScrollBy(-(delta / 120.0) * 80);
+        return true;
     }
 
     private double ReadingPaneWidth => System.Math.Max(160, _paneWidth);
 
     private double ReadingPaneHeight => System.Math.Max(160, _paneHeight);
 
-    private static double ScreenWidth
-    {
-        get
-        {
-            var info = DeviceDisplay.MainDisplayInfo;
-            var width = info.Density > 0 ? info.Width / info.Density : 0;
-            return width > 32 ? width : 360;
-        }
-    }
+    private static double ScreenWidth => PdfViewerLayout.WidthDip();
 
-    private static double ScreenHeight
-    {
-        get
-        {
-            var info = DeviceDisplay.MainDisplayInfo;
-            var height = info.Density > 0 ? info.Height / info.Density : 0;
-            return height > 32 ? height : 640;
-        }
-    }
-
-    private bool IsPhone => DeviceInfo.Idiom == DeviceIdiom.Phone;
+    private static double ScreenHeight => PdfViewerLayout.HeightDip();
 
     /// <summary>Opens a PDF request from a picker or operating-system activation.</summary>
     public async Task OpenAsync(
@@ -501,7 +467,7 @@ public sealed class PdfViewer : ContentView
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
             _pageRail.ItemsSource = null;
-            ClearReadingWindow();
+            _readingSurface.Clear();
             _outlineList.ItemsSource = null;
             _searchBar.Text = string.Empty;
             _searchStatus.Text = string.Empty;
@@ -556,7 +522,12 @@ public sealed class PdfViewer : ContentView
     public async Task SetZoomAsync(double zoom, CancellationToken cancellationToken = default)
     {
         _zoom = System.Math.Clamp(zoom, 0.5, 4);
-        await MainThread.InvokeOnMainThreadAsync(ReloadReadingStack).ConfigureAwait(false);
+        await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                _readingSurface.SetZoom(_zoom);
+                UpdateToolbar();
+            })
+            .ConfigureAwait(false);
         await SavePositionAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -613,7 +584,17 @@ public sealed class PdfViewer : ContentView
     public async Task RotateAsync(CancellationToken cancellationToken = default)
     {
         _rotation = NormalizeRotation(_rotation + 90);
-        await MainThread.InvokeOnMainThreadAsync(ReloadReadingStack).ConfigureAwait(false);
+        try
+        {
+            await MainThread.InvokeOnMainThreadAsync(ApplyReadingLayout)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            Error?.Invoke(this, new PdfViewerErrorEventArgs(exception));
+            SetStatus("Rotation could not be applied.");
+        }
+
         await SavePositionAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -635,38 +616,6 @@ public sealed class PdfViewer : ContentView
         CancellationToken cancellationToken) =>
         RenderPageAsync(pageIndex, ThumbnailDpi, cancellationToken);
 
-    private async Task<PdfRenderedPage> RenderReadingAsync(
-        int pageIndex,
-        CancellationToken cancellationToken)
-    {
-        if (_session is null || pageIndex < 0 || pageIndex >= _pages.Count)
-            throw new InvalidOperationException("No PDF document is open.");
-        var cell = CellSize(pageIndex);
-        var width = (int)System.Math.Clamp(cell.Width, 1, 16_384);
-        var height = (int)System.Math.Clamp(cell.Height, 1, 16_384);
-        var document = _session.Document;
-        var page = _pages[pageIndex];
-        var rotation = _rotation;
-        await _renderGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            return await Task.Run(
-                    () => _renderer.RenderScaled(
-                        document,
-                        page,
-                        width,
-                        height,
-                        rotation,
-                        cancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        finally
-        {
-            _renderGate.Release();
-        }
-    }
-
     private async Task<PdfRenderedPage> RenderPageAsync(
         int pageIndex,
         double dotsPerInch,
@@ -674,17 +623,25 @@ public sealed class PdfViewer : ContentView
     {
         if (_session is null)
             throw new InvalidOperationException("No PDF document is open.");
-        return await StageAsync(
-                $"render-page-{pageIndex}",
-                () => _renderer.RenderAsync(
-                        _session.Document,
-                        new PdfRenderRequest(
-                            pageIndex,
-                            dotsPerInch,
-                            Rotation: _rotation),
-                        cancellationToken)
-                    .AsTask())
-            .ConfigureAwait(false);
+        await _renderGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await StageAsync(
+                    $"render-page-{pageIndex}",
+                    () => _renderer.RenderAsync(
+                            _session.Document,
+                            new PdfRenderRequest(
+                                pageIndex,
+                                dotsPerInch,
+                                Rotation: _rotation),
+                            cancellationToken)
+                        .AsTask())
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _renderGate.Release();
+        }
     }
 
     private void RefreshFitSize()
@@ -717,19 +674,28 @@ public sealed class PdfViewer : ContentView
     private void ApplyWorkspaceColumns()
     {
         var compact = IsCompact;
+        ApplyPhoneToolbar(compact);
         if (_toolbar is not null)
         {
-            var toolbarWidth = Width > 32 ? Width : ScreenWidth;
+            var toolbarWidth = PdfViewerLayout.WidthDip(Width);
             _toolbar.WidthRequest = System.Math.Max(160, toolbarWidth);
+            _toolbar.Wrap = compact ? FlexWrap.NoWrap : FlexWrap.Wrap;
+            _toolbar.JustifyContent = FlexJustify.Start;
+            _toolbar.Padding = compact ? new Thickness(6, 4) : new Thickness(8, 6);
         }
         _viewerHeader.IsVisible = !compact;
         _openButton.IsVisible = compact;
+        _pagesTabButton.IsVisible = !compact;
+        _zoomOutButton.IsVisible = !compact;
+        _zoomInButton.IsVisible = !compact;
         _searchBar.IsVisible = !compact;
         _pageEntry.IsVisible = !compact;
         _searchStatus.IsVisible = !compact;
         _fitWidthButton.IsVisible = !compact;
         _rotateButton.IsVisible = !compact;
-        _previousButton.Text = compact ? "Prev" : "Previous";
+        _previousButton.Text = compact ? "‹" : "Previous";
+        _nextButton.Text = compact ? "›" : "Next";
+        _outlineTabButton.Text = compact ? "TOC" : "Contents";
         _zoomOutButton.Text = compact ? "−" : "Zoom −";
         _zoomInButton.Text = compact ? "+" : "Zoom +";
         foreach (var button in new[]
@@ -746,50 +712,117 @@ public sealed class PdfViewer : ContentView
                      _rotateButton,
                  })
         {
-            button.Padding = compact ? new Thickness(10, 6) : new Thickness(12, 8);
+            button.Padding = compact ? new Thickness(8, 6) : new Thickness(12, 8);
             button.MinimumHeightRequest = compact ? 40 : GraphicalProfileColors.TouchTarget;
-            button.FontSize = compact ? 12 : GraphicalProfileColors.NavigationSize;
+            button.MinimumWidthRequest = compact ? 40 : -1;
+            button.FontSize = compact ? 14 : GraphicalProfileColors.NavigationSize;
         }
+        _pageLabel.FontSize = compact ? 13 : GraphicalProfileColors.NavigationSize;
         _workspace.Padding = compact ? new Thickness(0) : new Thickness(8, 0, 8, 8);
         _workspace.ColumnSpacing = compact ? 0 : 8;
         if (compact)
         {
             _workspace.ColumnDefinitions[0].Width = GridLength.Star;
             _workspace.ColumnDefinitions[1].Width = new GridLength(0);
-            Grid.SetColumn(_readingScroll, 0);
-            Grid.SetColumnSpan(_readingScroll, 2);
+            Grid.SetColumn(_readingSurface, 0);
+            Grid.SetColumnSpan(_readingSurface, 2);
+            Grid.SetColumn(_emptyHint, 0);
+            Grid.SetColumnSpan(_emptyHint, 2);
             Grid.SetColumn(_sidebarScrim, 0);
             Grid.SetColumnSpan(_sidebarScrim, 2);
             Grid.SetColumn(_sidebar, 0);
             Grid.SetColumnSpan(_sidebar, 2);
             _sidebar.HorizontalOptions = LayoutOptions.Start;
-            _sidebar.WidthRequest = RailWidth;
+            _sidebar.InputTransparent = !_sidebarOpen;
+            _sidebar.Opacity = _sidebarOpen ? 1 : 0;
             _sidebar.IsVisible = _sidebarOpen;
             _sidebarScrim.IsVisible = _sidebarOpen;
+            if (_sidebarOpen)
+            {
+                _sidebar.ClearValue(MaximumWidthRequestProperty);
+                _sidebar.MinimumWidthRequest = RailWidth;
+                _sidebar.WidthRequest = RailWidth;
+            }
+            else
+            {
+                _sidebar.WidthRequest = 0;
+                _sidebar.MinimumWidthRequest = 0;
+                _sidebar.MaximumWidthRequest = 0;
+            }
         }
         else
         {
             _workspace.ColumnDefinitions[0].Width = new GridLength(RailWidth);
             _workspace.ColumnDefinitions[1].Width = GridLength.Star;
-            Grid.SetColumn(_readingScroll, 1);
-            Grid.SetColumnSpan(_readingScroll, 1);
+            Grid.SetColumn(_readingSurface, 1);
+            Grid.SetColumnSpan(_readingSurface, 1);
+            Grid.SetColumn(_emptyHint, 1);
+            Grid.SetColumnSpan(_emptyHint, 1);
             Grid.SetColumn(_sidebar, 0);
             Grid.SetColumnSpan(_sidebar, 1);
             _sidebar.HorizontalOptions = LayoutOptions.Fill;
+            _sidebar.ClearValue(MaximumWidthRequestProperty);
+            _sidebar.MinimumWidthRequest = RailWidth;
             _sidebar.WidthRequest = RailWidth;
             _sidebar.IsVisible = true;
             _sidebarScrim.IsVisible = false;
         }
 
-        _pageRail.IsVisible = !_showOutline;
-        _outlineList.IsVisible = _showOutline;
+        var railOpen = !compact || _sidebarOpen;
+        _pageRail.IsVisible = railOpen && !_showOutline;
+        _outlineList.IsVisible = railOpen && _showOutline;
+        _pageRail.WidthRequest = railOpen ? RailWidth : 0;
+        _outlineList.WidthRequest = railOpen ? RailWidth : 0;
+        _sidebar.IsClippedToBounds = true;
         if (ApplyDefaultFit() && _pages.Count > 0)
         {
             RefreshFitSize();
-            ReloadReadingStack();
+            ApplyReadingLayout();
         }
 
         ApplyNavButtonTheme();
+    }
+
+    private void ApplyPhoneToolbar(bool compact)
+    {
+        if (_toolbar is null || compact == _phoneToolbar)
+            return;
+        _phoneToolbar = compact;
+        _toolbar.Children.Clear();
+        if (compact)
+        {
+            _toolbar.Children.Add(_openButton);
+            _toolbar.Children.Add(_outlineTabButton);
+            _toolbar.Children.Add(_previousButton);
+            _toolbar.Children.Add(_pageLabel);
+            _toolbar.Children.Add(_nextButton);
+            _toolbar.Children.Add(_fitButton);
+            return;
+        }
+
+        _toolbar.Children.Add(_openButton);
+        _toolbar.Children.Add(_pagesTabButton);
+        _toolbar.Children.Add(_outlineTabButton);
+        _toolbar.Children.Add(_previousButton);
+        _toolbar.Children.Add(_nextButton);
+        _toolbar.Children.Add(_zoomOutButton);
+        _toolbar.Children.Add(_zoomInButton);
+        _toolbar.Children.Add(_fitButton);
+        _toolbar.Children.Add(_fitWidthButton);
+        _toolbar.Children.Add(_rotateButton);
+        _toolbar.Children.Add(_pageLabel);
+        _toolbar.Children.Add(_pageEntry);
+        _toolbar.Children.Add(_searchBar);
+        _toolbar.Children.Add(_searchStatus);
+    }
+
+    private void ShowEmptyHint()
+    {
+        var empty = _pages.Count == 0;
+        _emptyHint.IsVisible = empty;
+        _emptyHint.IsEnabled = empty;
+        _readingSurface.IsVisible = !empty;
+        _readingSurface.InputTransparent = empty;
     }
 
     private Task ShowSidebar(bool outline)
@@ -815,7 +848,8 @@ public sealed class PdfViewer : ContentView
             media.Width,
             media.Height,
             _zoom,
-            _fitKind);
+            _fitKind,
+            PdfViewerLayout.MaxDisplayDip);
     }
 
     private (double Width, double Height) ThumbSize(int pageIndex)
@@ -841,8 +875,8 @@ public sealed class PdfViewer : ContentView
     {
         if (_pages.Count == 0)
             return Task.CompletedTask;
-        var y = System.Math.Max(0, _readingScroll.ScrollY + (direction * ReadingPaneHeight * 0.92));
-        return _readingScroll.ScrollToAsync(0, y, animated: true);
+        _readingSurface.ScrollBy(direction * ReadingPaneHeight * 0.92);
+        return Task.CompletedTask;
     }
 
     private void OnOutlineSelectionChanged(object? sender, SelectionChangedEventArgs args)
@@ -923,14 +957,6 @@ public sealed class PdfViewer : ContentView
             .ConfigureAwait(false);
     }
 
-    private void OnPinchUpdated(object? sender, PinchGestureUpdatedEventArgs args)
-    {
-        if (args.Status is GestureStatus.Started)
-            _pinchStart = _zoom;
-        if (args.Status is GestureStatus.Running)
-            _ = SetZoomAsync(_pinchStart * args.Scale);
-    }
-
     /// <inheritdoc />
     protected override void OnSizeAllocated(double width, double height)
     {
@@ -946,51 +972,36 @@ public sealed class PdfViewer : ContentView
         var compact = IsCompact;
         var rail = compact ? 0 : RailWidth;
         var pad = compact ? 0 : 16;
-        var viewerWidth = Width > 32 ? Width : ScreenWidth;
-        var viewerHeight = Height > 32 ? Height : ScreenHeight;
+        var viewerWidth = PdfViewerLayout.WidthDip(Width);
+        var viewerHeight = PdfViewerLayout.HeightDip(Height);
         var allocatedWidth = System.Math.Max(160, viewerWidth - rail - pad);
         var chrome = compact ? 72 : 148;
         var allocatedHeight = System.Math.Max(160, viewerHeight - chrome);
         var paneWidth = allocatedWidth;
-        var paneHeight = _readingScroll.Height > 32 && _readingScroll.Height <= viewerHeight
-            ? _readingScroll.Height
+        var surfaceHeight = _readingSurface.Height;
+        var paneHeight = surfaceHeight > 32 && surfaceHeight <= viewerHeight
+            ? PdfViewerLayout.HeightDip(surfaceHeight)
             : allocatedHeight;
         paneWidth = System.Math.Max(160, paneWidth);
         paneHeight = System.Math.Max(160, paneHeight);
         var fitChanged = ApplyDefaultFit();
         if (!fitChanged
-            && System.Math.Abs(paneWidth - _paneWidth) < 1
-            && System.Math.Abs(paneHeight - _paneHeight) < 1)
+            && System.Math.Abs(paneWidth - _paneWidth) < 8
+            && System.Math.Abs(paneHeight - _paneHeight) < 8)
             return;
         _paneWidth = paneWidth;
         _paneHeight = paneHeight;
         RefreshFitSize();
-        ReloadReadingStack();
-    }
-
-    private void ReloadReadingStack()
-    {
-        if (_pages.Count == 0 || _reloadingStack)
+        if (_pages.Count == 0)
             return;
-        _reloadingStack = true;
-        try
-        {
-            ReloadReadingStackCore();
-        }
-        finally
-        {
-            _reloadingStack = false;
-        }
+        ApplyReadingLayout();
     }
 
-    private void ReloadReadingStackCore()
+    private void ApplyReadingLayout()
     {
-        var pages = Enumerable.Range(0, _pages.Count).ToArray();
-        ShowReadingPage();
-        _pageRail.ItemsSource = null;
-        _pageRail.ItemsSource = pages;
-        SyncRailSelection();
-        ScrollPagesIntoView(animate: false);
+        if (_pages.Count == 0)
+            return;
+        _readingSurface.SetView(_paneWidth, _paneHeight, _zoom, _fitKind, _rotation);
         UpdateToolbar();
     }
 
@@ -1014,294 +1025,56 @@ public sealed class PdfViewer : ContentView
         if (_pages.Count == 0)
             return;
         _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: animate);
-        _ = NavigateReadingAsync(animate);
+        _readingSurface.GoToPage(_pageIndex);
     }
 
     private void ShowReadingPage()
     {
-        if (_pages.Count == 0)
+        if (_pages.Count == 0 || _session is null)
         {
-            ClearReadingWindow();
+            _readingSurface.Clear();
             UpdateToolbar();
             return;
         }
 
-        ReloadReadingWindow();
-        _ = NavigateReadingAsync(animate: false);
+        _readingSurface.Bind(_session.Document, _pages, _renderer);
+        _readingSurface.SetView(_paneWidth, _paneHeight, _zoom, _fitKind, _rotation);
+        _readingSurface.GoToPage(_pageIndex);
         UpdateToolbar();
     }
 
-    private Grid CreateReadingSlot()
+    private void OnSurfacePageChanged(object? sender, int pageIndex)
     {
-        var page = new PdfPageView
-        {
-            HorizontalOptions = LayoutOptions.Center,
-            VerticalOptions = LayoutOptions.Start,
-            RenderPageAsync = RenderReadingAsync,
-            RenderFailed = OnPageRenderFailed,
-        };
-        var slot = new Grid
-        {
-            BackgroundColor = Profile.Background,
-            HorizontalOptions = LayoutOptions.Fill,
-        };
-        slot.Add(page);
-        _readingPages.Add(page);
-        _readingSlots.Add(slot);
-        return slot;
-    }
-
-    private double SlotHeight
-    {
-        get
-        {
-            if (_pages.Count == 0)
-                return ReadingPaneHeight;
-            var cell = CellSize(_pageIndex);
-            return System.Math.Max(1, cell.Height + PdfPageTurn.PageGutter);
-        }
-    }
-
-    private void ClearReadingWindow()
-    {
-        _windowStart = 0;
-        foreach (var page in _readingPages)
-            page.PageIndex = -1;
-        foreach (var slot in _readingSlots)
-            slot.IsVisible = false;
-    }
-
-    private void BindReadingSlot(Grid slot, PdfPageView page, int pageIndex)
-    {
-        var slotWidth = ReadingPaneWidth;
-        slot.BackgroundColor = Profile.Background;
-        slot.HorizontalOptions = LayoutOptions.Fill;
-        slot.WidthRequest = slotWidth;
-        slot.MinimumWidthRequest = slotWidth;
-        if (OperatingSystem.IsWindows())
-            slot.MaximumWidthRequest = slotWidth;
-        else
-            slot.ClearValue(Grid.MaximumWidthRequestProperty);
-        if (pageIndex < 0 || pageIndex >= _pages.Count)
-        {
-            page.PageIndex = -1;
-            slot.IsVisible = false;
-            slot.HeightRequest = SlotHeight;
-            slot.MinimumHeightRequest = slot.HeightRequest;
-            if (OperatingSystem.IsWindows())
-                slot.MaximumHeightRequest = slot.HeightRequest;
-            else
-                slot.ClearValue(Grid.MaximumHeightRequestProperty);
+        if (pageIndex == _pageIndex)
             return;
-        }
-
-        slot.IsVisible = true;
-        var cell = CellSize(pageIndex);
-        var height = cell.Height + PdfPageTurn.PageGutter;
-        slot.HeightRequest = height;
-        slot.MinimumHeightRequest = height;
-        if (OperatingSystem.IsWindows())
-            slot.MaximumHeightRequest = height;
-        else
-            slot.ClearValue(Grid.MaximumHeightRequestProperty);
-        page.HorizontalOptions = LayoutOptions.Center;
-        page.VerticalOptions = LayoutOptions.Start;
-        page.PageWidth = cell.Width;
-        page.PageHeight = cell.Height;
-        if (page.PageIndex != pageIndex)
-            page.PageIndex = pageIndex;
+        _pageIndex = pageIndex;
+        SyncRailSelection();
+        UpdateToolbar();
+        SetStatus($"Page {_pageIndex + 1} of {_pages.Count}");
+        PageChanged?.Invoke(this, EventArgs.Empty);
+        _ = SavePositionAsync(CancellationToken.None);
     }
 
-    private void UpdateStripHeight()
+    private void OnSurfaceZoomChanged(object? sender, double zoom)
     {
-        var height = 0d;
-        var visible = 0;
-        foreach (var slot in _readingSlots)
-        {
-            if (!slot.IsVisible)
-                continue;
-            visible++;
-            height += slot.HeightRequest > 0 ? slot.HeightRequest : SlotHeight;
-        }
-
-        var fallback = System.Math.Max(SlotHeight, visible * SlotHeight);
-        var stripHeight = height > 0 ? height : fallback;
-        _readingStrip.WidthRequest = ReadingPaneWidth;
-        _readingStrip.MinimumWidthRequest = ReadingPaneWidth;
-        _readingStrip.HeightRequest = stripHeight;
-        _readingStrip.MinimumHeightRequest = stripHeight;
-        _readingStrip.HorizontalOptions = LayoutOptions.Fill;
-        if (OperatingSystem.IsWindows())
-        {
-            _readingStrip.MaximumWidthRequest = ReadingPaneWidth;
-            _readingStrip.MaximumHeightRequest = stripHeight;
-        }
-        else
-        {
-            _readingStrip.ClearValue(MaximumWidthRequestProperty);
-            _readingStrip.ClearValue(MinimumHeightRequestProperty);
-            _readingStrip.ClearValue(MaximumHeightRequestProperty);
-            _readingStrip.MinimumHeightRequest = stripHeight;
-        }
-    }
-
-    private void ReloadReadingWindow()
-    {
-        if (_pages.Count == 0)
-        {
-            ClearReadingWindow();
+        var next = System.Math.Clamp(zoom, 0.5, 4);
+        if (System.Math.Abs(next - _zoom) < 0.001)
             return;
-        }
-
-        _windowStart = PdfPageTurn.WindowStart(_pageIndex, _pages.Count);
-        _readingScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Default;
-        for (var i = 0; i < _readingSlots.Count; i++)
-            BindReadingSlot(_readingSlots[i], _readingPages[i], _windowStart + i);
-        UpdateStripHeight();
+        _zoom = next;
+        UpdateToolbar();
+        _ = SavePositionAsync(CancellationToken.None);
     }
-
-    private bool ReadingWindowContains(int pageIndex) =>
-        _readingPages.Count > 0
-        && _readingPages[0].PageIndex >= 0
-        && pageIndex >= _windowStart
-        && pageIndex < _windowStart + _readingSlots.Count
-        && pageIndex < _pages.Count;
-
-    private async Task NavigateReadingAsync(bool animate)
-    {
-        if (_pages.Count == 0)
-        {
-            ClearReadingWindow();
-            return;
-        }
-
-        var alreadyShowing = ReadingWindowContains(_pageIndex);
-        _syncingScroll = true;
-        try
-        {
-            if (!alreadyShowing)
-                ReloadReadingWindow();
-            var y = PdfPageTurn.SlotOffset(_pageIndex, _windowStart, SlotHeight);
-            await _readingScroll.ScrollToAsync(0, y, animated: animate && alreadyShowing).ConfigureAwait(true);
-        }
-        finally
-        {
-            _syncingScroll = false;
-        }
-
-        await EnsureReadingWindowAsync().ConfigureAwait(true);
-    }
-
-    private async Task ShiftForwardAsync()
-    {
-        var nextIndex = _windowStart + _readingSlots.Count;
-        if (nextIndex >= _pages.Count || _readingSlots.Count == 0)
-            return;
-        var slot = _readingSlots[0];
-        var page = _readingPages[0];
-        var removedHeight = System.Math.Max(1, slot.HeightRequest);
-        var scrollY = _readingScroll.ScrollY;
-        _readingStrip.Remove(slot);
-        _readingSlots.RemoveAt(0);
-        _readingPages.RemoveAt(0);
-        _windowStart++;
-        _readingStrip.Add(slot);
-        _readingSlots.Add(slot);
-        _readingPages.Add(page);
-        BindReadingSlot(slot, page, nextIndex);
-        UpdateStripHeight();
-        await _readingScroll.ScrollToAsync(0, System.Math.Max(0, scrollY - removedHeight), animated: false)
-            .ConfigureAwait(true);
-    }
-
-    private async Task ShiftBackwardAsync()
-    {
-        if (_windowStart <= 0 || _readingSlots.Count == 0)
-            return;
-        var previousIndex = _windowStart - 1;
-        var last = _readingSlots.Count - 1;
-        var slot = _readingSlots[last];
-        var page = _readingPages[last];
-        var addedHeight = System.Math.Max(1, SlotHeight);
-        var scrollY = _readingScroll.ScrollY;
-        _readingStrip.Remove(slot);
-        _readingSlots.RemoveAt(last);
-        _readingPages.RemoveAt(last);
-        _windowStart--;
-        BindReadingSlot(slot, page, previousIndex);
-        addedHeight = System.Math.Max(1, slot.HeightRequest);
-        _readingStrip.Insert(0, slot);
-        _readingSlots.Insert(0, slot);
-        _readingPages.Insert(0, page);
-        UpdateStripHeight();
-        await _readingScroll.ScrollToAsync(0, scrollY + addedHeight, animated: false).ConfigureAwait(true);
-    }
-
-    private async Task EnsureReadingWindowAsync()
-    {
-        if (_pages.Count == 0 || _syncingScroll)
-            return;
-        _syncingScroll = true;
-        try
-        {
-            for (var step = 0; step < PdfPageTurn.WindowSize; step++)
-            {
-                var pageIndex = PdfPageTurn.PageIndexAt(
-                    _readingScroll.ScrollY,
-                    _windowStart,
-                    _pages.Count,
-                    SlotHeight);
-                if (PdfPageTurn.NeedsForwardShift(pageIndex, _windowStart, _pages.Count, _readingSlots.Count))
-                    await ShiftForwardAsync().ConfigureAwait(true);
-                else if (PdfPageTurn.NeedsBackwardShift(pageIndex, _windowStart))
-                    await ShiftBackwardAsync().ConfigureAwait(true);
-                else
-                    break;
-            }
-        }
-        finally
-        {
-            _syncingScroll = false;
-        }
-    }
-
-    private void OnReadingScrolled(object? sender, ScrolledEventArgs args)
-    {
-        if (_syncingScroll || _pages.Count == 0 || _reloadingStack)
-            return;
-        UpdateReadingPageFromScroll(args.ScrollY);
-        _ = EnsureReadingWindowAsync();
-        _scrollSettle?.Stop();
-        _scrollSettle?.Start();
-    }
-
-    private void UpdateReadingPageFromScroll(double scrollY)
-    {
-        var pageIndex = PdfPageTurn.PageIndexAt(scrollY, _windowStart, _pages.Count, SlotHeight);
-        if (pageIndex != _pageIndex)
-        {
-            _pageIndex = pageIndex;
-            SyncRailSelection();
-            UpdateToolbar();
-            PageChanged?.Invoke(this, EventArgs.Empty);
-            _ = SavePositionAsync(CancellationToken.None);
-        }
-    }
-
-    private Task SettleReadingScrollAsync() => EnsureReadingWindowAsync();
 
     private void ApplyTheme()
     {
         BackgroundColor = Profile.Background;
-        _readingScroll.BackgroundColor = Profile.Background;
-        _readingStrip.BackgroundColor = Profile.Background;
-        foreach (var slot in _readingSlots)
-            slot.BackgroundColor = Profile.Background;
+        _readingSurface.BackgroundColor = Profile.Background;
         _pageRail.BackgroundColor = Profile.Surface;
         _outlineList.BackgroundColor = Profile.Surface;
         _sidebar.BackgroundColor = Profile.Surface;
         _titleLabel.TextColor = Profile.Text;
         _statusLabel.TextColor = Profile.Muted;
+        _emptyHint.TextColor = Profile.Muted;
         foreach (var button in new[]
                  {
                      _openButton,
@@ -1423,6 +1196,7 @@ public sealed class PdfViewer : ContentView
         _outlineTabButton.IsEnabled = enabled;
         _rotateButton.IsEnabled = enabled;
         _pageLabel.Text = $"{(_pages.Count == 0 ? 0 : _pageIndex + 1)} / {_pages.Count}";
+        ShowEmptyHint();
         ApplyNavButtonTheme();
         StyleNavButton(_fitButton, _fitKind == PdfFitKind.Page);
         StyleNavButton(_fitWidthButton, _fitKind == PdfFitKind.Width);

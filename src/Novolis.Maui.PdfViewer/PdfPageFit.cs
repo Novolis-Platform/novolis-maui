@@ -23,7 +23,8 @@ public static class PdfPageFit
         double pageWidth,
         double pageHeight,
         double zoom,
-        PdfFitKind fit = PdfFitKind.Page)
+        PdfFitKind fit = PdfFitKind.Page,
+        double maxEdge = 4096)
     {
         var paneWidth = System.Math.Max(160, availableWidth);
         var paneHeight = System.Math.Max(160, availableHeight);
@@ -35,6 +36,14 @@ public static class PdfPageFit
         scale *= System.Math.Clamp(zoom, 0.5, 4);
         var width = System.Math.Clamp(mediaWidth * scale, 80, 4096);
         var height = System.Math.Clamp(mediaHeight * scale, 80, 4096);
+        var max = maxEdge > 80 ? maxEdge : 4096;
+        if (width > max || height > max)
+        {
+            var shrink = max / System.Math.Max(width, height);
+            width *= shrink;
+            height *= shrink;
+        }
+
         return (width, height);
     }
 }
