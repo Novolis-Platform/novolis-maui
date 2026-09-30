@@ -1,0 +1,128 @@
+using Novolis.Maui.GraphicalProfile;
+using Novolis.Pdf.Rendering;
+
+namespace Novolis.Maui.PdfViewer;
+
+/// <summary>Virtualized MAUI page cell that renders only while it is attached.</summary>
+public sealed class PdfPageView : ContentView
+{
+    private readonly Image _image = new()
+    {
+        Aspect = Aspect.AspectFit,
+        HorizontalOptions = LayoutOptions.Center,
+        VerticalOptions = LayoutOptions.Start,
+    };
+    private CancellationTokenSource? _renderCancellation;
+    private byte[]? _pngBytes;
+
+    /// <summary>Identifies the page index rendered by this cell.</summary>
+    public static readonly BindableProperty PageIndexProperty =
+        BindableProperty.Create(
+            nameof(PageIndex),
+            typeof(int),
+            typeof(PdfPageView),
+            -1,
+            propertyChanged: static (bindable, _, _) =>
+                ((PdfPageView)bindable).QueueRender());
+
+    /// <summary>Identifies the page display width.</summary>
+    public static readonly BindableProperty PageWidthProperty =
+        BindableProperty.Create(
+            nameof(PageWidth),
+            typeof(double),
+            typeof(PdfPageView),
+            320d,
+            propertyChanged: static (bindable, _, _) =>
+                ((PdfPageView)bindable).ApplySize());
+
+    /// <summary>Gets or sets the zero-based page index.</summary>
+    public int PageIndex
+    {
+        get => (int)GetValue(PageIndexProperty);
+        set => SetValue(PageIndexProperty, value);
+    }
+
+    /// <summary>Gets or sets the rendered page width.</summary>
+    public double PageWidth
+    {
+        get => (double)GetValue(PageWidthProperty);
+        set => SetValue(PageWidthProperty, value);
+    }
+
+    /// <summary>Provides the viewer's bounded page rendering callback.</summary>
+    public Func<int, CancellationToken, Task<PdfRenderedPage>>? RenderPageAsync { get; set; }
+
+    /// <summary>Creates a virtualized page cell.</summary>
+    public PdfPageView()
+    {
+        AutomationId = "PdfPageView";
+        Padding = new Thickness(8);
+        BackgroundColor = GraphicalProfile.Surface;
+        Content = new Border
+        {
+            Stroke = new SolidColorBrush(GraphicalProfile.Border),
+            StrokeThickness = 1,
+            Padding = new Thickness(4),
+            Content = _image,
+        };
+        ApplySize();
+    }
+
+    /// <inheritdoc />
+    protected override void OnHandlerChanged()
+    {
+        if (Handler is null)
+            CancelRender();
+        else
+            QueueRender();
+        base.OnHandlerChanged();
+    }
+
+    private void QueueRender()
+    {
+        if (Handler is null || PageIndex < 0 || RenderPageAsync is null)
+            return;
+        _ = RenderAsync(PageIndex);
+    }
+
+    private async Task RenderAsync(int pageIndex)
+    {
+        CancelRender();
+        _renderCancellation = new CancellationTokenSource();
+        try
+        {
+            var rendered = await RenderPageAsync!(pageIndex, _renderCancellation.Token)
+                .ConfigureAwait(false);
+            if (pageIndex != PageIndex || _renderCancellation.IsCancellationRequested)
+                return;
+            _pngBytes = rendered.PngBytes;
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                _image.Source = ImageSource.FromStream(
+                    () => new MemoryStream(_pngBytes, writable: false));
+                ApplySize();
+                SemanticProperties.SetDescription(this, $"PDF page {pageIndex + 1}");
+            });
+        }
+        catch (OperationCanceledException) when (_renderCancellation.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void ApplySize()
+    {
+        if (PageWidth <= 0)
+            return;
+        WidthRequest = PageWidth;
+        _image.WidthRequest = Math.Max(80, PageWidth - 24);
+        if (_pngBytes is null)
+            _image.HeightRequest = Math.Max(120, PageWidth * 1.414);
+    }
+
+    private void CancelRender()
+    {
+        _renderCancellation?.Cancel();
+        _renderCancellation?.Dispose();
+        _renderCancellation = null;
+    }
+}

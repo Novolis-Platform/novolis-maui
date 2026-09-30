@@ -22,14 +22,19 @@ public sealed class PdfViewer : ContentView
     private readonly Button _zoomOutButton;
     private readonly Button _zoomInButton;
     private readonly Button _fitButton;
+    private readonly Button _rotateButton;
     private readonly Label _pageLabel;
+    private readonly Entry _pageEntry;
+    private readonly SearchBar _searchBar;
+    private readonly Label _searchStatus;
     private readonly Label _titleLabel;
     private readonly Label _statusLabel;
-    private readonly Image _pageImage;
-    private readonly ScrollView _pageScroll;
+    private readonly CollectionView _pageCollection;
+    private readonly PdfTextExtractor _textExtractor;
+    private readonly PdfTextSearch _textSearch = new();
     private PdfDocumentSession? _session;
     private IReadOnlyList<PdfResolvedPage> _pages = [];
-    private byte[]? _currentPageBytes;
+    private IReadOnlyList<PdfTextSpan> _textSpans = [];
     private int _pageIndex;
     private double _zoom = 1;
     private int _rotation;
@@ -44,32 +49,59 @@ public sealed class PdfViewer : ContentView
         _limits.Validate();
         _stateStore = stateStore;
         _renderer = new PdfSkiaPageRenderer(_limits);
+        _textExtractor = new PdfTextExtractor(_limits);
 
         _previousButton = CreateToolbarButton("Previous", "PdfPreviousPage", GoPreviousAsync);
         _nextButton = CreateToolbarButton("Next", "PdfNextPage", GoNextAsync);
         _zoomOutButton = CreateToolbarButton("Zoom −", "PdfZoomOut", ZoomOutAsync);
         _zoomInButton = CreateToolbarButton("Zoom +", "PdfZoomIn", ZoomInAsync);
         _fitButton = CreateToolbarButton("Fit", "PdfFit", FitAsync);
+        _rotateButton = CreateToolbarButton("Rotate", "PdfRotate", RotateAsync);
         _pageLabel = CreateLabel("0 / 0", "PdfPageLabel");
+        _pageEntry = new Entry
+        {
+            AutomationId = "PdfPageEntry",
+            Placeholder = "Page",
+            Keyboard = Keyboard.Numeric,
+            WidthRequest = 64,
+            HorizontalTextAlignment = TextAlignment.Center,
+            ClearButtonVisibility = ClearButtonVisibility.WhileEditing,
+        };
+        _pageEntry.Completed += (_, _) => GoToEnteredPageAsync();
+        _searchBar = new SearchBar
+        {
+            AutomationId = "PdfSearch",
+            Placeholder = "Find in document",
+            WidthRequest = 220,
+            HorizontalOptions = LayoutOptions.Fill,
+        };
+        _searchBar.SearchButtonPressed += (_, _) => SearchAsync();
+        _searchStatus = CreateLabel(string.Empty, "PdfSearchStatus");
         _titleLabel = CreateLabel("No document open", "PdfDocumentTitle");
         _statusLabel = CreateLabel("Choose a local PDF to begin.", "PdfStatus");
-        _pageImage = new Image
+        _pageCollection = new CollectionView
         {
-            AutomationId = "PdfPageImage",
-            Aspect = Aspect.AspectFit,
-            HorizontalOptions = LayoutOptions.Center,
-            VerticalOptions = LayoutOptions.Center,
-            Margin = new Thickness(12),
-        };
-        _pageScroll = new ScrollView
-        {
-            AutomationId = "PdfPageScroll",
-            Orientation = ScrollOrientation.Both,
-            Content = _pageImage,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Always,
+            AutomationId = "PdfPageCollection",
+            SelectionMode = SelectionMode.None,
             VerticalScrollBarVisibility = ScrollBarVisibility.Always,
+            ItemsLayout = new LinearItemsLayout(ItemsLayoutOrientation.Vertical)
+            {
+                ItemSpacing = 12,
+            },
         };
-        _pageScroll.SizeChanged += (_, _) => ApplyImageSize();
+        _pageCollection.ItemTemplate = new DataTemplate(() =>
+        {
+            var page = new PdfPageView
+            {
+                RenderPageAsync = RenderPageCellAsync,
+            };
+            page.SetBinding(PdfPageView.PageIndexProperty, ".");
+            page.SetBinding(
+                PdfPageView.PageWidthProperty,
+                new Binding(nameof(PageWidth), source: this));
+            return page;
+        });
+        SizeChanged += (_, _) => OnPropertyChanged(nameof(PageWidth));
 
         var toolbarItems = new HorizontalStackLayout
         {
@@ -82,7 +114,11 @@ public sealed class PdfViewer : ContentView
                 _zoomOutButton,
                 _zoomInButton,
                 _fitButton,
+                _rotateButton,
                 _pageLabel,
+                _pageEntry,
+                _searchBar,
+                _searchStatus,
             },
         };
         var toolbar = new ScrollView
@@ -116,7 +152,7 @@ public sealed class PdfViewer : ContentView
         };
         layout.Add(header, 0, 0);
         layout.Add(toolbar, 0, 1);
-        layout.Add(_pageScroll, 0, 2);
+        layout.Add(_pageCollection, 0, 2);
         Content = layout;
 
         var pinch = new PinchGestureRecognizer();
@@ -172,6 +208,7 @@ public sealed class PdfViewer : ContentView
             _session = await PdfDocumentSession.OpenAsync(source, _limits, cancellationToken)
                 .ConfigureAwait(false);
             _pages = PdfPageTree.Resolve(_session.Document, _limits);
+            _textSpans = [];
             _pageIndex = 0;
             _zoom = 1;
             _rotation = 0;
@@ -196,6 +233,7 @@ public sealed class PdfViewer : ContentView
 
             await MainThread.InvokeOnMainThreadAsync(async () =>
             {
+                _pageCollection.ItemsSource = Enumerable.Range(0, _pages.Count).ToArray();
                 _titleLabel.Text = _session.Document.Info.Title
                     ?? _session.Document.Info.Source.DisplayName;
                 ApplyTheme();
@@ -227,10 +265,12 @@ public sealed class PdfViewer : ContentView
         _session = null;
         _pages = [];
         _pageIndex = 0;
-        _currentPageBytes = null;
+        _textSpans = [];
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
-            _pageImage.Source = null;
+            _pageCollection.ItemsSource = null;
+            _searchBar.Text = string.Empty;
+            _searchStatus.Text = string.Empty;
             _titleLabel.Text = "No document open";
             SetStatus("Choose a local PDF to begin.");
             UpdateToolbar();
@@ -243,7 +283,12 @@ public sealed class PdfViewer : ContentView
         if (_pages.Count == 0)
             return Task.CompletedTask;
         _pageIndex = Math.Clamp(pageIndex, 0, _pages.Count - 1);
-        return RenderCurrentPageAsync(cancellationToken);
+        _pageCollection.ScrollTo(
+            _pageIndex,
+            position: ScrollToPosition.Center,
+            animate: true);
+        UpdateToolbar();
+        return SavePositionAsync(cancellationToken);
     }
 
     /// <summary>Moves to the next page.</summary>
