@@ -9,17 +9,30 @@ public static class PdfPageFit
         double availableHeight,
         double pageWidth,
         double pageHeight,
-        double zoom)
+        double zoom,
+        PdfFitKind fit = PdfFitKind.Page)
     {
-        var paneWidth = Math.Max(160, availableWidth);
-        var paneHeight = Math.Max(160, availableHeight);
+        var size = DisplaySize(availableWidth, availableHeight, pageWidth, pageHeight, zoom, fit);
+        return size.Width;
+    }
+
+    /// <summary>Pixel size of one page cell at the current fit and zoom.</summary>
+    public static (double Width, double Height) DisplaySize(
+        double availableWidth,
+        double availableHeight,
+        double pageWidth,
+        double pageHeight,
+        double zoom,
+        PdfFitKind fit = PdfFitKind.Page)
+    {
+        var paneWidth = System.Math.Max(160, availableWidth);
+        var paneHeight = System.Math.Max(160, availableHeight);
         var mediaWidth = pageWidth > 0 && double.IsFinite(pageWidth) ? pageWidth : 612;
         var mediaHeight = pageHeight > 0 && double.IsFinite(pageHeight) ? pageHeight : 792;
-        var fitted = paneWidth;
-        var fittedHeight = fitted * (mediaHeight / mediaWidth);
-        if (fittedHeight > paneHeight)
-            fitted = paneHeight * (mediaWidth / mediaHeight);
-
-        return Math.Max(160, fitted * Math.Clamp(zoom, 0.5, 4));
+        var scale = fit == PdfFitKind.Width
+            ? paneWidth / mediaWidth
+            : System.Math.Min(paneWidth / mediaWidth, paneHeight / mediaHeight);
+        scale *= System.Math.Clamp(zoom, 0.5, 4);
+        return (System.Math.Max(80, mediaWidth * scale), System.Math.Max(80, mediaHeight * scale));
     }
 }

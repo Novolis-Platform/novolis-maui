@@ -12,6 +12,13 @@ public sealed class PdfPageView : ContentView
         HorizontalOptions = LayoutOptions.Center,
         VerticalOptions = LayoutOptions.Start,
     };
+    private readonly Label _placeholder = new()
+    {
+        Text = "Page",
+        HorizontalTextAlignment = TextAlignment.Center,
+        VerticalTextAlignment = TextAlignment.Center,
+        Opacity = 0.55,
+    };
     private CancellationTokenSource? _renderCancellation;
     private byte[]? _pngBytes;
     private int _pixelWidth;
@@ -74,7 +81,14 @@ public sealed class PdfPageView : ContentView
             Stroke = new SolidColorBrush(Profile.Border),
             StrokeThickness = 1,
             Padding = new Thickness(4),
-            Content = _image,
+            Content = new Grid
+            {
+                Children =
+                {
+                    _placeholder,
+                    _image,
+                },
+            },
         };
         ApplySize();
     }
@@ -111,6 +125,7 @@ public sealed class PdfPageView : ContentView
             _pixelHeight = rendered.PixelHeight;
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
+                _placeholder.IsVisible = false;
                 _image.Source = ImageSource.FromStream(
                     () => new MemoryStream(_pngBytes, writable: false));
                 ApplySize();
@@ -122,6 +137,12 @@ public sealed class PdfPageView : ContentView
         }
         catch (Exception exception)
         {
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                _placeholder.IsVisible = true;
+                _placeholder.Text = "Page could not be rendered";
+                _image.Source = null;
+            });
             RenderFailed?.Invoke(exception);
         }
     }
@@ -131,11 +152,11 @@ public sealed class PdfPageView : ContentView
         if (PageWidth <= 0)
             return;
         WidthRequest = PageWidth;
-        var imageWidth = Math.Max(80, PageWidth - 24);
+        var imageWidth = System.Math.Max(80, PageWidth - 24);
         _image.WidthRequest = imageWidth;
         _image.HeightRequest = _pixelWidth > 0 && _pixelHeight > 0
             ? imageWidth * _pixelHeight / _pixelWidth
-            : Math.Max(120, imageWidth * 1.414);
+            : System.Math.Max(120, imageWidth * 1.414);
         HeightRequest = _image.HeightRequest + 24;
     }
 
