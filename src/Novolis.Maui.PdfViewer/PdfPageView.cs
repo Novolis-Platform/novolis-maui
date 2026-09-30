@@ -42,11 +42,12 @@ public sealed class PdfPageView : ContentView
             typeof(double),
             typeof(PdfPageView),
             320d,
-            propertyChanged: static (bindable, _, _) =>
+            propertyChanged: static (bindable, oldValue, newValue) =>
             {
                 var page = (PdfPageView)bindable;
                 page.ApplySize();
-                page.QueueRender();
+                if (System.Math.Abs((double)oldValue - (double)newValue) >= 1)
+                    page.QueueRender();
             });
 
     /// <summary>Identifies the page display height.</summary>
