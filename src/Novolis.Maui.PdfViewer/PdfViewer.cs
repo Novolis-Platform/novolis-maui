@@ -405,8 +405,8 @@ public sealed class PdfViewer : ContentView
                 ApplyTheme();
                 ApplyWorkspaceColumns();
                 RefreshFitSize();
-                await RenderCurrentPageAsync(cancellationToken).ConfigureAwait(false);
-                _readingStack.ScrollTo(_pageIndex, position: ScrollToPosition.Start, animate: false);
+                await RenderCurrentPageAsync(cancellationToken);
+                ScrollPagesIntoView(animate: false);
             });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -455,12 +455,10 @@ public sealed class PdfViewer : ContentView
         if (_pages.Count == 0)
             return Task.CompletedTask;
         _pageIndex = System.Math.Clamp(pageIndex, 0, _pages.Count - 1);
-        SyncRailSelection();
-        _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: true);
-        _readingStack.ScrollTo(_pageIndex, position: ScrollToPosition.Start, animate: true);
-        RefreshFitSize();
-        UpdateToolbar();
-        PageChanged?.Invoke(this, EventArgs.Empty);
+        if (MainThread.IsMainThread)
+            ApplyPageNavigation(animate: true);
+        else
+            MainThread.BeginInvokeOnMainThread(() => ApplyPageNavigation(animate: true));
         return SavePositionAsync(cancellationToken);
     }
 
@@ -562,7 +560,7 @@ public sealed class PdfViewer : ContentView
 
         SetStatus($"Page {_pageIndex + 1} of {_pages.Count}");
         SyncRailSelection();
-        _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: false);
+        ScrollPagesIntoView(animate: false);
         UpdateToolbar();
         PageChanged?.Invoke(this, EventArgs.Empty);
         return SavePositionAsync(cancellationToken);
@@ -787,8 +785,31 @@ public sealed class PdfViewer : ContentView
         _pageRail.ItemsSource = null;
         _pageRail.ItemsSource = pages;
         SyncRailSelection();
-        _readingStack.ScrollTo(_pageIndex, position: ScrollToPosition.Start, animate: false);
+        ScrollPagesIntoView(animate: false);
         UpdateToolbar();
+    }
+
+    private void ApplyPageNavigation(bool animate)
+    {
+        SyncRailSelection();
+        ScrollPagesIntoView(animate);
+        RefreshFitSize();
+        UpdateToolbar();
+        PageChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ScrollPagesIntoView(bool animate)
+    {
+        if (!MainThread.IsMainThread)
+        {
+            MainThread.BeginInvokeOnMainThread(() => ScrollPagesIntoView(animate));
+            return;
+        }
+
+        if (_pages.Count == 0)
+            return;
+        _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: animate);
+        _readingStack.ScrollTo(_pageIndex, position: ScrollToPosition.Start, animate: animate);
     }
 
     private void ApplyTheme()
