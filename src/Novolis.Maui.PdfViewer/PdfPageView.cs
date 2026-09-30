@@ -9,8 +9,8 @@ public sealed class PdfPageView : ContentView
     private readonly Image _image = new()
     {
         Aspect = Aspect.AspectFit,
-        HorizontalOptions = LayoutOptions.Center,
-        VerticalOptions = LayoutOptions.Start,
+        HorizontalOptions = LayoutOptions.Fill,
+        VerticalOptions = LayoutOptions.Fill,
     };
     private readonly Label _placeholder = new()
     {
@@ -19,6 +19,7 @@ public sealed class PdfPageView : ContentView
         VerticalTextAlignment = TextAlignment.Center,
         Opacity = 0.55,
     };
+    private readonly Border _paper;
     private CancellationTokenSource? _renderCancellation;
     private byte[]? _pngBytes;
     private int _pixelWidth;
@@ -48,6 +49,16 @@ public sealed class PdfPageView : ContentView
                 page.QueueRender();
             });
 
+    /// <summary>Identifies the page display height.</summary>
+    public static readonly BindableProperty PageHeightProperty =
+        BindableProperty.Create(
+            nameof(PageHeight),
+            typeof(double),
+            typeof(PdfPageView),
+            0d,
+            propertyChanged: static (bindable, _, _) =>
+                ((PdfPageView)bindable).ApplySize());
+
     /// <summary>Gets or sets the zero-based page index.</summary>
     public int PageIndex
     {
@@ -62,6 +73,13 @@ public sealed class PdfPageView : ContentView
         set => SetValue(PageWidthProperty, value);
     }
 
+    /// <summary>Gets or sets the rendered page height. When unset, height follows letter aspect.</summary>
+    public double PageHeight
+    {
+        get => (double)GetValue(PageHeightProperty);
+        set => SetValue(PageHeightProperty, value);
+    }
+
     /// <summary>Provides the viewer's bounded page rendering callback.</summary>
     public Func<int, CancellationToken, Task<PdfRenderedPage>>? RenderPageAsync { get; set; }
 
@@ -74,15 +92,21 @@ public sealed class PdfPageView : ContentView
     /// <summary>Creates a virtualized page cell.</summary>
     public PdfPageView()
     {
-        Padding = new Thickness(8);
-        BackgroundColor = Profile.Surface;
-        Content = new Border
+        HorizontalOptions = LayoutOptions.Center;
+        VerticalOptions = LayoutOptions.Start;
+        Padding = 0;
+        BackgroundColor = Colors.Transparent;
+        _paper = new Border
         {
+            BackgroundColor = Colors.White,
             Stroke = new SolidColorBrush(Profile.Border),
             StrokeThickness = 1,
-            Padding = new Thickness(4),
+            Padding = 0,
+            HorizontalOptions = LayoutOptions.Center,
+            VerticalOptions = LayoutOptions.Start,
             Content = new Grid
             {
+                BackgroundColor = Colors.White,
                 Children =
                 {
                     _placeholder,
@@ -90,6 +114,7 @@ public sealed class PdfPageView : ContentView
                 },
             },
         };
+        Content = _paper;
         ApplySize();
     }
 
@@ -149,15 +174,29 @@ public sealed class PdfPageView : ContentView
 
     private void ApplySize()
     {
-        if (PageWidth <= 0)
+        if (PageWidth <= 0 || !double.IsFinite(PageWidth))
             return;
-        WidthRequest = PageWidth;
-        var imageWidth = System.Math.Max(80, PageWidth - 24);
-        _image.WidthRequest = imageWidth;
-        _image.HeightRequest = _pixelWidth > 0 && _pixelHeight > 0
-            ? imageWidth * _pixelHeight / _pixelWidth
-            : System.Math.Max(120, imageWidth * 1.414);
-        HeightRequest = _image.HeightRequest + 24;
+        var paperWidth = System.Math.Clamp(PageWidth, 80, 4096);
+        var paperHeight = PageHeight > 0 && double.IsFinite(PageHeight)
+            ? System.Math.Clamp(PageHeight, 80, 4096)
+            : _pixelWidth > 0 && _pixelHeight > 0
+                ? paperWidth * _pixelHeight / _pixelWidth
+                : paperWidth * 1.5;
+        paperHeight = System.Math.Clamp(paperHeight, 80, 4096);
+        LockSize(this, paperWidth, paperHeight);
+        LockSize(_paper, paperWidth, paperHeight);
+        _image.WidthRequest = paperWidth;
+        _image.HeightRequest = paperHeight;
+    }
+
+    private static void LockSize(VisualElement view, double width, double height)
+    {
+        view.WidthRequest = width;
+        view.HeightRequest = height;
+        view.MinimumWidthRequest = width;
+        view.MinimumHeightRequest = height;
+        view.MaximumWidthRequest = width;
+        view.MaximumHeightRequest = height;
     }
 
     private void CancelRender()

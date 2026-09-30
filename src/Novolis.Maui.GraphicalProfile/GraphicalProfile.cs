@@ -180,6 +180,12 @@ public static class GraphicalProfile
         AddColor(application, OnAccentFillResourceKey, light
             ? GraphicalProfileColors.OnAccentFillLight
             : GraphicalProfileColors.OnAccentFillDark);
+        AddColor(application, "Primary", light
+            ? GraphicalProfileColors.AccentFillLight
+            : GraphicalProfileColors.AccentFillDark);
+        AddColor(application, "Secondary", light
+            ? GraphicalProfileColors.RaisedLight
+            : GraphicalProfileColors.RaisedDark);
         AddColor(application, ActionResourceKey, light
             ? GraphicalProfileColors.ActionLight
             : GraphicalProfileColors.ActionDark);

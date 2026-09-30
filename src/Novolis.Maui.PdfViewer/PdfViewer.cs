@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Novolis.Maui.GraphicalProfile;
 using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
 using Novolis.Pdf.Abstractions;
 using Novolis.Pdf.Core;
@@ -17,6 +18,7 @@ public sealed class PdfViewer : ContentView
     private const double DefaultDpi = 120;
     private const double ThumbnailDpi = 56;
     private const double RailWidth = 156;
+    private const double CompactBreakpoint = 800;
     private readonly PdfLimits _limits;
     private readonly IPdfDocumentStateStore? _stateStore;
     private readonly PdfSkiaPageRenderer _renderer;
@@ -37,9 +39,13 @@ public sealed class PdfViewer : ContentView
     private readonly Label _statusLabel;
     private readonly CollectionView _pageRail;
     private readonly CollectionView _outlineList;
-    private readonly CollectionView _readingStack;
+    private readonly ScrollView _readingScroll;
+    private readonly Grid _readingPane;
+    private readonly PdfPageView _readingPage;
     private readonly Grid _sidebar;
     private readonly Grid _workspace;
+    private readonly Grid _viewerHeader;
+    private readonly BoxView _sidebarScrim;
     private readonly PdfNavigationExtractor _navigation = new();
     private readonly PdfTextExtractor _textExtractor;
     private readonly PdfTextSearch _textSearch = new();
@@ -55,10 +61,11 @@ public sealed class PdfViewer : ContentView
     private double _paneHeight = 720;
     private double _pinchStart = 1;
     private PdfFitKind _fitKind = PdfFitKind.Page;
+    private bool _fitUserChosen;
+    private bool _reloadingStack;
     private bool _showOutline;
+    private bool _sidebarOpen;
     private IReadOnlyList<PdfOutlineItem> _outlines = [];
-    private int _firstVisible;
-    private int _lastVisible;
 
     /// <summary>Creates a viewer with optional local reading-position persistence.</summary>
     public PdfViewer(
@@ -110,6 +117,7 @@ public sealed class PdfViewer : ContentView
             WidthRequest = RailWidth,
             BackgroundColor = Profile.Surface,
             VerticalScrollBarVisibility = ScrollBarVisibility.Always,
+            ItemSizingStrategy = ItemSizingStrategy.MeasureAllItems,
             ItemsLayout = new LinearItemsLayout(ItemsLayoutOrientation.Vertical)
             {
                 ItemSpacing = 8,
@@ -120,9 +128,17 @@ public sealed class PdfViewer : ContentView
             var page = new PdfPageView
             {
                 AutomationId = "PdfPageThumb",
+                HorizontalOptions = LayoutOptions.Center,
                 RenderPageAsync = RenderThumbnailAsync,
                 RenderFailed = OnPageRenderFailed,
-                PageWidth = 128,
+            };
+            page.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName != nameof(PdfPageView.PageIndex) || page.PageIndex < 0)
+                    return;
+                var thumb = ThumbSize(page.PageIndex);
+                page.PageWidth = thumb.Width;
+                page.PageHeight = thumb.Height;
             };
             page.SetBinding(PdfPageView.PageIndexProperty, ".");
             return page;
@@ -151,52 +167,46 @@ public sealed class PdfViewer : ContentView
         _sidebar = new Grid
         {
             WidthRequest = RailWidth,
-            RowDefinitions =
-            {
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Star),
-            },
+            BackgroundColor = Profile.Surface,
         };
-        var sidebarTabs = new HorizontalStackLayout
+        _sidebar.Add(_pageRail);
+        _sidebar.Add(_outlineList);
+        _sidebarScrim = new BoxView
         {
-            Spacing = 4,
-            Padding = new Thickness(4),
-            Children = { _pagesTabButton, _outlineTabButton },
+            Color = Profile.Text.WithAlpha(0.28f),
+            IsVisible = false,
         };
-        _sidebar.Add(sidebarTabs, 0, 0);
-        _sidebar.Add(_pageRail, 0, 1);
-        _sidebar.Add(_outlineList, 0, 1);
-        _readingStack = new CollectionView
+        _sidebarScrim.GestureRecognizers.Add(new TapGestureRecognizer
+        {
+            Command = new Command(CloseCompactSidebar),
+        });
+        _readingPage = new PdfPageView
+        {
+            HorizontalOptions = LayoutOptions.Center,
+            VerticalOptions = LayoutOptions.Center,
+            RenderPageAsync = RenderReadingAsync,
+            RenderFailed = OnPageRenderFailed,
+        };
+        _readingPane = new Grid
+        {
+            BackgroundColor = Profile.Background,
+            HorizontalOptions = LayoutOptions.Fill,
+            VerticalOptions = LayoutOptions.Fill,
+        };
+        _readingPane.Add(_readingPage);
+        _readingScroll = new ScrollView
         {
             AutomationId = "PdfReadingPage",
-            SelectionMode = SelectionMode.None,
             BackgroundColor = Profile.Background,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Always,
-            ItemsLayout = new LinearItemsLayout(ItemsLayoutOrientation.Vertical)
-            {
-                ItemSpacing = 12,
-            },
+            Orientation = ScrollOrientation.Vertical,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Never,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Never,
+            Content = _readingPane,
         };
-        _readingStack.ItemTemplate = new DataTemplate(() =>
-        {
-            var page = new PdfPageView
-            {
-                HorizontalOptions = LayoutOptions.Center,
-                RenderPageAsync = RenderReadingAsync,
-                RenderFailed = OnPageRenderFailed,
-            };
-            page.PropertyChanged += (_, args) =>
-            {
-                if (args.PropertyName == nameof(PdfPageView.PageIndex) && page.PageIndex >= 0)
-                    page.PageWidth = CellSize(page.PageIndex).Width;
-            };
-            page.SetBinding(PdfPageView.PageIndexProperty, ".");
-            return page;
-        });
-        _readingStack.Scrolled += OnReadingScrolled;
+        _readingScroll.SizeChanged += (_, _) => UpdatePaneFromReadingStack();
         var pinch = new PinchGestureRecognizer();
         pinch.PinchUpdated += OnPinchUpdated;
-        _readingStack.GestureRecognizers.Add(pinch);
+        _readingScroll.GestureRecognizers.Add(pinch);
         _workspace = new Grid
         {
             ColumnSpacing = 8,
@@ -207,16 +217,19 @@ public sealed class PdfViewer : ContentView
                 new ColumnDefinition(GridLength.Star),
             },
         };
+        _workspace.Add(_readingScroll, 1, 0);
+        _workspace.Add(_sidebarScrim, 0, 0);
         _workspace.Add(_sidebar, 0, 0);
-        _workspace.Add(_readingStack, 1, 0);
         SizeChanged += (_, _) => ApplyWorkspaceColumns();
 
         var toolbarItems = new HorizontalStackLayout
         {
-            Spacing = 8,
-            Padding = new Thickness(12, 10),
+            Spacing = GraphicalProfileColors.ControlGap,
+            Padding = new Thickness(12, 8),
             Children =
             {
+                _pagesTabButton,
+                _outlineTabButton,
                 _previousButton,
                 _nextButton,
                 _zoomOutButton,
@@ -237,7 +250,7 @@ public sealed class PdfViewer : ContentView
             Content = toolbarItems,
         };
 
-        var header = new Grid
+        _viewerHeader = new Grid
         {
             Padding = new Thickness(16, 14, 16, 8),
             RowDefinitions =
@@ -246,8 +259,8 @@ public sealed class PdfViewer : ContentView
                 new RowDefinition(GridLength.Auto),
             },
         };
-        header.Add(_titleLabel, 0, 0);
-        header.Add(_statusLabel, 0, 1);
+        _viewerHeader.Add(_titleLabel, 0, 0);
+        _viewerHeader.Add(_statusLabel, 0, 1);
 
         var layout = new Grid
         {
@@ -259,7 +272,7 @@ public sealed class PdfViewer : ContentView
             },
             BackgroundColor = Profile.Background,
         };
-        layout.Add(header, 0, 0);
+        layout.Add(_viewerHeader, 0, 0);
         layout.Add(toolbar, 0, 1);
         layout.Add(_workspace, 0, 2);
         Content = layout;
@@ -367,6 +380,9 @@ public sealed class PdfViewer : ContentView
             _pageIndex = 0;
             _zoom = 1;
             _rotation = 0;
+            _fitUserChosen = false;
+            _fitKind = PdfFitKind.Page;
+            _sidebarOpen = false;
             if (_stateStore is not null)
             {
                 await StageAsync(
@@ -397,7 +413,7 @@ public sealed class PdfViewer : ContentView
             {
                 var pages = Enumerable.Range(0, _pages.Count).ToArray();
                 _pageRail.ItemsSource = pages;
-                _readingStack.ItemsSource = pages;
+                ShowReadingPage();
                 _outlineList.ItemsSource = _outlines;
                 SyncRailSelection();
                 _titleLabel.Text = _session.Document.Info.Title
@@ -439,7 +455,7 @@ public sealed class PdfViewer : ContentView
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
             _pageRail.ItemsSource = null;
-            _readingStack.ItemsSource = null;
+            _readingPage.PageIndex = -1;
             _outlineList.ItemsSource = null;
             _searchBar.Text = string.Empty;
             _searchStatus.Text = string.Empty;
@@ -477,6 +493,7 @@ public sealed class PdfViewer : ContentView
     /// <summary>Fits the current page entirely inside the reading pane.</summary>
     public Task FitAsync()
     {
+        _fitUserChosen = true;
         _fitKind = PdfFitKind.Page;
         return SetZoomAsync(1);
     }
@@ -484,6 +501,7 @@ public sealed class PdfViewer : ContentView
     /// <summary>Fits the current page width to the reading pane.</summary>
     public Task FitWidthAsync()
     {
+        _fitUserChosen = true;
         _fitKind = PdfFitKind.Width;
         return SetZoomAsync(1);
     }
@@ -615,65 +633,123 @@ public sealed class PdfViewer : ContentView
         OnPropertyChanged(nameof(PageWidth));
     }
 
+    private bool IsCompact => Width > 0 && Width < CompactBreakpoint;
+
+    private bool ApplyDefaultFit()
+    {
+        if (_fitUserChosen)
+            return false;
+        var next = IsCompact ? PdfFitKind.Width : PdfFitKind.Page;
+        if (next == _fitKind)
+            return false;
+        _fitKind = next;
+        return true;
+    }
+
+    private void CloseCompactSidebar()
+    {
+        if (!IsCompact)
+            return;
+        _sidebarOpen = false;
+        ApplyWorkspaceColumns();
+    }
+
     private void ApplyWorkspaceColumns()
     {
-        _sidebar.IsVisible = true;
-        _workspace.ColumnDefinitions[0].Width = new GridLength(RailWidth);
+        var compact = IsCompact;
+        _viewerHeader.IsVisible = !compact;
+        _workspace.Padding = compact ? new Thickness(0, 0, 0, 8) : new Thickness(8, 0, 8, 8);
+        _workspace.ColumnSpacing = compact ? 0 : 8;
+        if (compact)
+        {
+            _workspace.ColumnDefinitions[0].Width = GridLength.Star;
+            _workspace.ColumnDefinitions[1].Width = new GridLength(0);
+            Grid.SetColumn(_readingScroll, 0);
+            Grid.SetColumnSpan(_readingScroll, 2);
+            Grid.SetColumn(_sidebarScrim, 0);
+            Grid.SetColumnSpan(_sidebarScrim, 2);
+            Grid.SetColumn(_sidebar, 0);
+            Grid.SetColumnSpan(_sidebar, 2);
+            _sidebar.HorizontalOptions = LayoutOptions.Start;
+            _sidebar.WidthRequest = RailWidth;
+            _sidebar.IsVisible = _sidebarOpen;
+            _sidebarScrim.IsVisible = _sidebarOpen;
+        }
+        else
+        {
+            _workspace.ColumnDefinitions[0].Width = new GridLength(RailWidth);
+            _workspace.ColumnDefinitions[1].Width = GridLength.Star;
+            Grid.SetColumn(_readingScroll, 1);
+            Grid.SetColumnSpan(_readingScroll, 1);
+            Grid.SetColumn(_sidebar, 0);
+            Grid.SetColumnSpan(_sidebar, 1);
+            _sidebar.HorizontalOptions = LayoutOptions.Fill;
+            _sidebar.WidthRequest = RailWidth;
+            _sidebar.IsVisible = true;
+            _sidebarScrim.IsVisible = false;
+        }
+
         _pageRail.IsVisible = !_showOutline;
         _outlineList.IsVisible = _showOutline;
+        if (ApplyDefaultFit() && _pages.Count > 0)
+        {
+            RefreshFitSize();
+            ReloadReadingStack();
+        }
+
+        ApplyNavButtonTheme();
     }
 
     private Task ShowSidebar(bool outline)
     {
-        _showOutline = outline;
+        if (IsCompact && _sidebarOpen && _showOutline == outline)
+            _sidebarOpen = false;
+        else
+        {
+            _showOutline = outline;
+            _sidebarOpen = true;
+        }
+
         ApplyWorkspaceColumns();
         return Task.CompletedTask;
     }
 
     private (double Width, double Height) CellSize(int pageIndex)
     {
-        if (_pages.Count == 0)
-            return (System.Math.Max(160, _paneWidth), System.Math.Max(160, _paneHeight));
-        var page = _pages[System.Math.Clamp(pageIndex, 0, _pages.Count - 1)];
-        var info = page.Info with { Rotation = page.Info.Rotation + _rotation };
+        var media = MediaSize(pageIndex);
         return PdfPageFit.DisplaySize(
             _paneWidth,
             _paneHeight,
-            info.DisplayWidth,
-            info.DisplayHeight,
+            media.Width,
+            media.Height,
             _zoom,
             _fitKind);
+    }
+
+    private (double Width, double Height) ThumbSize(int pageIndex)
+    {
+        const double width = 128;
+        var media = MediaSize(pageIndex);
+        var height = width * media.Height / media.Width;
+        return (width, System.Math.Clamp(height, 80, 4096));
+    }
+
+    private (double Width, double Height) MediaSize(int pageIndex)
+    {
+        if (_pages.Count == 0)
+            return (432, 648);
+        var page = _pages[System.Math.Clamp(pageIndex, 0, _pages.Count - 1)];
+        var info = page.Info with { Rotation = page.Info.Rotation + _rotation };
+        var width = info.DisplayWidth > 0 && double.IsFinite(info.DisplayWidth) ? info.DisplayWidth : 432;
+        var height = info.DisplayHeight > 0 && double.IsFinite(info.DisplayHeight) ? info.DisplayHeight : 648;
+        return (width, height);
     }
 
     private Task ScrollViewportAsync(int direction)
     {
         if (_pages.Count == 0)
             return Task.CompletedTask;
-        var span = System.Math.Max(1, _lastVisible - _firstVisible);
-        if (span <= 1)
-        {
-            var cell = CellSize(_pageIndex);
-            span = System.Math.Max(1, (int)System.Math.Floor(ReadingPaneHeight / System.Math.Max(1, cell.Height + 12)));
-        }
-
-        return GoToPageAsync(_pageIndex + (direction * span));
-    }
-
-    private void OnReadingScrolled(object? sender, ItemsViewScrolledEventArgs args)
-    {
-        if (_pages.Count == 0 || args.FirstVisibleItemIndex < 0)
-            return;
-        _firstVisible = System.Math.Clamp(args.FirstVisibleItemIndex, 0, _pages.Count - 1);
-        _lastVisible = System.Math.Clamp(System.Math.Max(args.LastVisibleItemIndex, _firstVisible), 0, _pages.Count - 1);
-        var visible = _firstVisible;
-        if (visible == _pageIndex)
-            return;
-        _pageIndex = visible;
-        SyncRailSelection();
-        UpdateToolbar();
-        SetStatus($"Page {_pageIndex + 1} of {_pages.Count}");
-        PageChanged?.Invoke(this, EventArgs.Empty);
-        _ = SavePositionAsync(CancellationToken.None);
+        return GoToPageAsync(_pageIndex + direction);
     }
 
     private void OnOutlineSelectionChanged(object? sender, SelectionChangedEventArgs args)
@@ -681,7 +757,10 @@ public sealed class PdfViewer : ContentView
         if (args.CurrentSelection.FirstOrDefault() is not PdfOutlineItem item)
             return;
         if (item.PageIndex is int pageIndex)
+        {
+            CloseCompactSidebar();
             _ = GoToPageAsync(pageIndex);
+        }
     }
 
     private void SyncRailSelection()
@@ -695,6 +774,7 @@ public sealed class PdfViewer : ContentView
     {
         if (_railSync || args.CurrentSelection.FirstOrDefault() is not int pageIndex)
             return;
+        CloseCompactSidebar();
         _ = GoToPageAsync(pageIndex);
     }
 
@@ -765,9 +845,25 @@ public sealed class PdfViewer : ContentView
         if (width < 32 || height < 32)
             return;
         ApplyWorkspaceColumns();
-        var paneWidth = System.Math.Max(160, width - RailWidth - 24);
-        var paneHeight = System.Math.Max(160, height - 148);
-        if (System.Math.Abs(paneWidth - _paneWidth) < 1 && System.Math.Abs(paneHeight - _paneHeight) < 1)
+        UpdatePaneFromReadingStack();
+    }
+
+    private void UpdatePaneFromReadingStack()
+    {
+        var rail = IsCompact ? 0 : RailWidth;
+        var chrome = _viewerHeader.IsVisible ? 148 : 72;
+        var paneWidth = _readingScroll.Width > 32
+            ? _readingScroll.Width
+            : System.Math.Max(160, Width - rail - 16);
+        var paneHeight = _readingScroll.Height > 32
+            ? _readingScroll.Height
+            : System.Math.Max(160, Height - chrome);
+        paneWidth = System.Math.Max(160, paneWidth);
+        paneHeight = System.Math.Max(160, paneHeight);
+        var fitChanged = ApplyDefaultFit();
+        if (!fitChanged
+            && System.Math.Abs(paneWidth - _paneWidth) < 1
+            && System.Math.Abs(paneHeight - _paneHeight) < 1)
             return;
         _paneWidth = paneWidth;
         _paneHeight = paneHeight;
@@ -777,11 +873,23 @@ public sealed class PdfViewer : ContentView
 
     private void ReloadReadingStack()
     {
-        if (_pages.Count == 0)
+        if (_pages.Count == 0 || _reloadingStack)
             return;
+        _reloadingStack = true;
+        try
+        {
+            ReloadReadingStackCore();
+        }
+        finally
+        {
+            _reloadingStack = false;
+        }
+    }
+
+    private void ReloadReadingStackCore()
+    {
         var pages = Enumerable.Range(0, _pages.Count).ToArray();
-        _readingStack.ItemsSource = null;
-        _readingStack.ItemsSource = pages;
+        ShowReadingPage();
         _pageRail.ItemsSource = null;
         _pageRail.ItemsSource = pages;
         SyncRailSelection();
@@ -809,13 +917,42 @@ public sealed class PdfViewer : ContentView
         if (_pages.Count == 0)
             return;
         _pageRail.ScrollTo(_pageIndex, position: ScrollToPosition.Center, animate: animate);
-        _readingStack.ScrollTo(_pageIndex, position: ScrollToPosition.Start, animate: animate);
+        ShowReadingPage();
+    }
+
+    private void ShowReadingPage()
+    {
+        if (_pages.Count == 0)
+        {
+            _readingPage.PageIndex = -1;
+            return;
+        }
+
+        var cell = CellSize(_pageIndex);
+        _readingPage.PageWidth = cell.Width;
+        _readingPage.PageHeight = cell.Height;
+        _readingPage.HorizontalOptions = LayoutOptions.Center;
+        _readingPage.VerticalOptions = _fitKind == PdfFitKind.Page
+            ? LayoutOptions.Center
+            : LayoutOptions.Start;
+        _readingScroll.VerticalScrollBarVisibility = _fitKind == PdfFitKind.Width
+            ? ScrollBarVisibility.Always
+            : ScrollBarVisibility.Never;
+        _readingPane.WidthRequest = ReadingPaneWidth;
+        _readingPane.MinimumWidthRequest = ReadingPaneWidth;
+        _readingPane.HeightRequest = _fitKind == PdfFitKind.Width
+            ? System.Math.Max(ReadingPaneHeight, cell.Height)
+            : ReadingPaneHeight;
+        _readingPane.MinimumHeightRequest = _readingPane.HeightRequest;
+        _readingPage.PageIndex = _pageIndex;
+        UpdateToolbar();
     }
 
     private void ApplyTheme()
     {
         BackgroundColor = Profile.Background;
-        _readingStack.BackgroundColor = Profile.Background;
+        _readingScroll.BackgroundColor = Profile.Background;
+        _readingPane.BackgroundColor = Profile.Background;
         _pageRail.BackgroundColor = Profile.Surface;
         _outlineList.BackgroundColor = Profile.Surface;
         _sidebar.BackgroundColor = Profile.Surface;
@@ -829,18 +966,39 @@ public sealed class PdfViewer : ContentView
                      _zoomInButton,
                      _fitButton,
                      _fitWidthButton,
-                     _pagesTabButton,
-                     _outlineTabButton,
                      _rotateButton,
                  })
         {
-            button.BackgroundColor = Profile.Action;
-            button.TextColor = Profile.OnAction;
+            button.BackgroundColor = Profile.Raised;
+            button.TextColor = Profile.Text;
+            button.BorderColor = Profile.Border;
+            button.BorderWidth = GraphicalProfileColors.Stroke;
         }
+
+        ApplyNavButtonTheme();
+        StyleNavButton(_fitButton, _fitKind == PdfFitKind.Page);
+        StyleNavButton(_fitWidthButton, _fitKind == PdfFitKind.Width);
         _pageEntry.TextColor = Profile.Text;
         _searchBar.TextColor = Profile.Text;
         _searchBar.BackgroundColor = Profile.Raised;
         _searchStatus.TextColor = Profile.Muted;
+        _sidebarScrim.Color = Profile.Text.WithAlpha(0.28f);
+    }
+
+    private void ApplyNavButtonTheme()
+    {
+        var pagesOn = !_showOutline && (!IsCompact || _sidebarOpen);
+        var outlineOn = _showOutline && (!IsCompact || _sidebarOpen);
+        StyleNavButton(_pagesTabButton, pagesOn);
+        StyleNavButton(_outlineTabButton, outlineOn);
+    }
+
+    private static void StyleNavButton(Button button, bool selected)
+    {
+        button.BackgroundColor = selected ? Profile.AccentFill : Profile.Raised;
+        button.TextColor = selected ? Profile.OnAccentFill : Profile.Text;
+        button.BorderColor = Profile.Border;
+        button.BorderWidth = GraphicalProfileColors.Stroke;
     }
 
     private void SetBusy(bool busy, string? status = null)
@@ -919,6 +1077,9 @@ public sealed class PdfViewer : ContentView
         _outlineTabButton.IsEnabled = enabled;
         _rotateButton.IsEnabled = enabled;
         _pageLabel.Text = $"{(_pages.Count == 0 ? 0 : _pageIndex + 1)} / {_pages.Count}";
+        ApplyNavButtonTheme();
+        StyleNavButton(_fitButton, _fitKind == PdfFitKind.Page);
+        StyleNavButton(_fitWidthButton, _fitKind == PdfFitKind.Width);
     }
 
     private static Button CreateToolbarButton(
@@ -930,10 +1091,15 @@ public sealed class PdfViewer : ContentView
         {
             Text = text,
             AutomationId = automationId,
-            FontSize = 12,
+            FontSize = GraphicalProfileColors.NavigationSize,
             FontAttributes = FontAttributes.Bold,
-            CornerRadius = 14,
-            Padding = new Thickness(12, 7),
+            BackgroundColor = Profile.Raised,
+            TextColor = Profile.Text,
+            BorderColor = Profile.Border,
+            BorderWidth = GraphicalProfileColors.Stroke,
+            CornerRadius = (int)GraphicalProfileColors.ControlRadius,
+            MinimumHeightRequest = GraphicalProfileColors.TouchTarget,
+            Padding = new Thickness(12, 8),
         };
         SemanticProperties.SetDescription(button, text);
         button.Clicked += async (_, _) => await action().ConfigureAwait(false);
