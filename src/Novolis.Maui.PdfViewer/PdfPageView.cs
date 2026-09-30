@@ -8,9 +8,10 @@ public sealed class PdfPageView : ContentView
 {
     private readonly Image _image = new()
     {
-        Aspect = Aspect.AspectFit,
+        Aspect = Aspect.Fill,
         HorizontalOptions = LayoutOptions.Fill,
         VerticalOptions = LayoutOptions.Fill,
+        BackgroundColor = Colors.White,
     };
     private readonly Label _placeholder = new()
     {
@@ -20,6 +21,7 @@ public sealed class PdfPageView : ContentView
         Opacity = 0.55,
     };
     private readonly Border _paper;
+    private string? _androidCachePath;
     private CancellationTokenSource? _renderCancellation;
     private byte[]? _pngBytes;
     private int _pixelWidth;
@@ -115,6 +117,7 @@ public sealed class PdfPageView : ContentView
                 },
             },
         };
+        _placeholder.TextColor = Profile.Text;
         Content = _paper;
         ApplySize();
     }
@@ -151,10 +154,17 @@ public sealed class PdfPageView : ContentView
             _pixelHeight = rendered.PixelHeight;
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
-                _placeholder.IsVisible = false;
-                _image.Source = ImageSource.FromStream(
-                    () => new MemoryStream(_pngBytes, writable: false));
                 ApplySize();
+                _placeholder.IsVisible = false;
+                _placeholder.TextColor = Profile.Text;
+                _image.IsVisible = true;
+                _image.Opacity = 1;
+                if (!OperatingSystem.IsAndroid())
+                    _image.Source = null;
+                _image.Source = CreatePngSource(_pngBytes);
+                ApplySize();
+                _image.InvalidateMeasure();
+                InvalidateMeasure();
                 SemanticProperties.SetDescription(this, $"PDF page {pageIndex + 1}");
             });
         }
@@ -186,8 +196,7 @@ public sealed class PdfPageView : ContentView
         paperHeight = System.Math.Clamp(paperHeight, 80, 4096);
         LockSize(this, paperWidth, paperHeight);
         LockSize(_paper, paperWidth, paperHeight);
-        _image.WidthRequest = paperWidth;
-        _image.HeightRequest = paperHeight;
+        LockSize(_image, paperWidth, paperHeight);
     }
 
     private static void LockSize(VisualElement view, double width, double height)
@@ -196,8 +205,45 @@ public sealed class PdfPageView : ContentView
         view.HeightRequest = height;
         view.MinimumWidthRequest = width;
         view.MinimumHeightRequest = height;
-        view.MaximumWidthRequest = width;
-        view.MaximumHeightRequest = height;
+        if (OperatingSystem.IsWindows())
+        {
+            view.MaximumWidthRequest = width;
+            view.MaximumHeightRequest = height;
+        }
+        else
+        {
+            view.ClearValue(MaximumWidthRequestProperty);
+            view.ClearValue(MaximumHeightRequestProperty);
+        }
+    }
+
+    private ImageSource CreatePngSource(byte[] png)
+    {
+        if (OperatingSystem.IsAndroid())
+        {
+            var cacheRoot = FileSystem.CacheDirectory;
+            if (string.IsNullOrWhiteSpace(cacheRoot))
+                cacheRoot = Path.GetTempPath();
+            Directory.CreateDirectory(cacheRoot);
+            var previous = _androidCachePath;
+            _androidCachePath = Path.Combine(cacheRoot, $"novolis-pdf-cell-{Guid.NewGuid():N}.png");
+            File.WriteAllBytes(_androidCachePath, png);
+            if (previous is not null)
+            {
+                try
+                {
+                    File.Delete(previous);
+                }
+                catch (IOException)
+                {
+                }
+            }
+
+            return new FileImageSource { File = _androidCachePath };
+        }
+
+        var copy = png;
+        return ImageSource.FromStream(() => new MemoryStream(copy, writable: false));
     }
 
     private void CancelRender()

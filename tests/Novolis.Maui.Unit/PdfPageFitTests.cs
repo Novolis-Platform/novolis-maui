@@ -21,4 +21,12 @@ public sealed class PdfPageFitTests
         await Assert.That(size.Height).IsLessThanOrEqualTo(800);
         await Assert.That(size.Width / size.Height).IsEqualTo(432d / 648d).Within(0.01);
     }
+
+    [Test]
+    public async Task FitWidth_UsesPaneWidthAndKeepsSixByNineAspect()
+    {
+        var size = PdfPageFit.DisplaySize(411, 4000, 432, 648, 1, PdfFitKind.Width);
+        await Assert.That(size.Width).IsEqualTo(411).Within(0.5);
+        await Assert.That(size.Width / size.Height).IsEqualTo(432d / 648d).Within(0.01);
+    }
 }
