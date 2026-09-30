@@ -56,6 +56,7 @@ public sealed class PdfViewer : ContentView
         IPdfDocumentStateStore? stateStore = null,
         PdfLimits? limits = null)
     {
+        AutomationId = "PdfViewer";
         _limits = limits ?? PdfLimits.Default;
         _limits.Validate();
         _stateStore = stateStore;

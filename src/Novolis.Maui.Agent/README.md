@@ -54,3 +54,5 @@ AgentProperties.SetId(button, "pdf.zoomIn", AgentRoleNames.Button);
 | `ui.wait` | Host-side wait for control state |
 
 Enable with env `NOVOLIS_MAUI_AGENT=1`. Optional endpoint override: `NOVOLIS_MAUI_AGENT_ENDPOINT`.
+
+Device / OS smoke (Windows and Android hosts) uses **Novolis.Testing.Appium** — see `d:\novolis\novolis-apps\tests\NovolisPdfReader.UiTests`. Live agent dumps use `MauiAgentDump` or the `MauiAgentMcp` sidecar.

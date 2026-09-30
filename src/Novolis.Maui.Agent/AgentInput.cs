@@ -131,7 +131,45 @@ internal static class AgentInput
             }
         }
 
+        if (request.Keys is { Length: > 0 })
+        {
+            foreach (var key in request.Keys)
+            {
+                switch (key.Trim().ToLowerInvariant())
+                {
+                    case "enter" or "return":
+                        SendCompleted(target);
+                        break;
+                    case "tab":
+                        break;
+                    case "escape":
+                        break;
+                    default:
+                        return new UiTypeResponseDto(
+                            request.RequestId,
+                            false,
+                            $"Unsupported key '{key}'.");
+                }
+            }
+        }
+
         return new UiTypeResponseDto(request.RequestId, true, null);
+    }
+
+    private static void SendCompleted(VisualElement target)
+    {
+        switch (target)
+        {
+            case Entry entry:
+                typeof(Entry).GetMethod(
+                        "SendCompleted",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    ?.Invoke(entry, null);
+                return;
+            case SearchBar search:
+                search.SearchCommand?.Execute(search.SearchCommandParameter);
+                return;
+        }
     }
 
     private static void InvokePrimaryClick(VisualElement target)
