@@ -12,5 +12,6 @@
     <ProjectReference Include="../../src/Novolis.Maui.Mermaid/Novolis.Maui.Mermaid.csproj" />
     <ProjectReference Include="../../src/Novolis.Maui.Markdown/Novolis.Maui.Markdown.csproj" />
     <ProjectReference Include="../../src/Novolis.Maui.GraphicalProfile/Novolis.Maui.GraphicalProfile.csproj" />
+    <ProjectReference Include="../../src/Novolis.Maui.PdfViewer/Novolis.Maui.PdfViewer.csproj" />
   </ItemGroup>
 </Project>

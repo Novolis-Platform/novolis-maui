@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.PdfViewer</PackageId>
+    <RootNamespace>Novolis.Maui.PdfViewer</RootNamespace>
+    <Description>Local Novolis PDF viewer control for MAUI Windows and Android hosts.</Description>
+    <PackageTags>maui;pdf;viewer;offline;novolis</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+    <LibraryReference Include="Novolis.Maui.GraphicalProfile" />
+    <LibraryReference Include="Novolis.Pdf.Abstractions" />
+    <LibraryReference Include="Novolis.Pdf.Core" />
+    <LibraryReference Include="Novolis.Pdf.Documents" />
+    <LibraryReference Include="Novolis.Pdf.Parsing" />
+    <LibraryReference Include="Novolis.Pdf.Platform" />
+    <LibraryReference Include="Novolis.Pdf.Rendering" />
+    <LibraryReference Include="Novolis.Pdf.Rendering.Skia" />
+    <LibraryReference Include="Novolis.Pdf.Text" />
+  </ItemGroup>
+</Project>
