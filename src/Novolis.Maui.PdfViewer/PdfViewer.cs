@@ -730,8 +730,6 @@ public sealed class PdfViewer : ContentView
             Grid.SetColumnSpan(_emptyHint, 2);
             Grid.SetColumn(_sidebarScrim, 0);
             Grid.SetColumnSpan(_sidebarScrim, 2);
-            Grid.SetColumn(_sidebar, 0);
-            Grid.SetColumnSpan(_sidebar, 2);
             _sidebar.HorizontalOptions = LayoutOptions.Start;
             _sidebar.InputTransparent = !_sidebarOpen;
             _sidebar.Opacity = _sidebarOpen ? 1 : 0;
@@ -739,12 +737,18 @@ public sealed class PdfViewer : ContentView
             _sidebarScrim.IsVisible = _sidebarOpen;
             if (_sidebarOpen)
             {
+                if (!_workspace.Children.Contains(_sidebar))
+                    _workspace.Add(_sidebar, 0, 0);
+                Grid.SetColumn(_sidebar, 0);
+                Grid.SetColumnSpan(_sidebar, 2);
                 _sidebar.ClearValue(MaximumWidthRequestProperty);
                 _sidebar.MinimumWidthRequest = RailWidth;
                 _sidebar.WidthRequest = RailWidth;
             }
             else
             {
+                if (_workspace.Children.Contains(_sidebar))
+                    _workspace.Remove(_sidebar);
                 _sidebar.WidthRequest = 0;
                 _sidebar.MinimumWidthRequest = 0;
                 _sidebar.MaximumWidthRequest = 0;
@@ -758,6 +762,8 @@ public sealed class PdfViewer : ContentView
             Grid.SetColumnSpan(_readingSurface, 1);
             Grid.SetColumn(_emptyHint, 1);
             Grid.SetColumnSpan(_emptyHint, 1);
+            if (!_workspace.Children.Contains(_sidebar))
+                _workspace.Add(_sidebar, 0, 0);
             Grid.SetColumn(_sidebar, 0);
             Grid.SetColumnSpan(_sidebar, 1);
             _sidebar.HorizontalOptions = LayoutOptions.Fill;
