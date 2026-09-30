@@ -47,6 +47,9 @@ public sealed class PdfViewer : ContentView
     private int _rotation;
     private bool _isBusy;
     private bool _railSync;
+    private double _paneWidth = 720;
+    private double _paneHeight = 720;
+    private double _pinchStart = 1;
 
     /// <summary>Creates a viewer with optional local reading-position persistence.</summary>
     public PdfViewer(
@@ -103,6 +106,7 @@ public sealed class PdfViewer : ContentView
         {
             var page = new PdfPageView
             {
+                AutomationId = "PdfPageThumb",
                 RenderPageAsync = RenderThumbnailAsync,
                 RenderFailed = OnPageRenderFailed,
                 PageWidth = 128,
@@ -114,8 +118,8 @@ public sealed class PdfViewer : ContentView
         _readingPage = new PdfPageView
         {
             AutomationId = "PdfReadingPage",
-            HorizontalOptions = LayoutOptions.Center,
-            VerticalOptions = LayoutOptions.Center,
+            HorizontalOptions = LayoutOptions.Fill,
+            VerticalOptions = LayoutOptions.Fill,
             RenderPageAsync = RenderReadingAsync,
             RenderFailed = OnPageRenderFailed,
         };
@@ -132,7 +136,6 @@ public sealed class PdfViewer : ContentView
         };
         _readingHost = new Grid { BackgroundColor = Profile.Background };
         _readingHost.Add(_readingScroll);
-        _readingHost.SizeChanged += (_, _) => RefreshFitSize();
         _workspace = new Grid
         {
             ColumnSpacing = 8,
@@ -145,11 +148,7 @@ public sealed class PdfViewer : ContentView
         };
         _workspace.Add(_pageRail, 0, 0);
         _workspace.Add(_readingHost, 1, 0);
-        SizeChanged += (_, _) =>
-        {
-            ApplyWorkspaceColumns();
-            RefreshFitSize();
-        };
+        SizeChanged += (_, _) => ApplyWorkspaceColumns();
 
         var toolbarItems = new HorizontalStackLayout
         {
@@ -248,49 +247,15 @@ public sealed class PdfViewer : ContentView
     /// <summary>Width of the current page so the whole page fits the reading pane.</summary>
     public double ReadingPageWidth
     {
-        get
-        {
-            var pageWidth = 612d;
-            var pageHeight = 792d;
-            if (_pages.Count > 0)
-            {
-                var info = _pages[Math.Clamp(_pageIndex, 0, _pages.Count - 1)].Info;
-                pageWidth = info.DisplayWidth;
-                pageHeight = info.DisplayHeight;
-            }
-
-            return PdfPageFit.PageWidth(
-                ReadingPaneWidth,
-                ReadingPaneHeight,
-                pageWidth,
-                pageHeight,
-                _zoom);
-        }
+        get => Math.Max(160, _paneWidth);
     }
 
     private bool ShowPageRail =>
         OperatingSystem.IsWindows() || Width >= 800;
 
-    private double ReadingPaneWidth
-    {
-        get
-        {
-            if (_readingHost.Width > 1)
-                return Math.Max(160, _readingHost.Width - 16);
-            var fallback = Width > 1 ? Width : 720;
-            return Math.Max(160, fallback - (ShowPageRail ? RailWidth + 32 : 32));
-        }
-    }
+    private double ReadingPaneWidth => Math.Max(160, _paneWidth);
 
-    private double ReadingPaneHeight
-    {
-        get
-        {
-            if (_readingHost.Height > 1)
-                return Math.Max(160, _readingHost.Height - 16);
-            return Math.Max(160, (Height > 1 ? Height : 720) - 160);
-        }
-    }
+    private double ReadingPaneHeight => Math.Max(160, _paneHeight);
 
     /// <summary>Opens a PDF request from a picker or operating-system activation.</summary>
     public async Task OpenAsync(
@@ -440,7 +405,7 @@ public sealed class PdfViewer : ContentView
         _zoom = 1;
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
-            RefreshFitSize();
+            ReloadReadingPage();
             _ = _readingScroll.ScrollToAsync(0, 0, false);
         }).ConfigureAwait(false);
         await SavePositionAsync(CancellationToken.None).ConfigureAwait(false);
@@ -450,7 +415,7 @@ public sealed class PdfViewer : ContentView
     public async Task SetZoomAsync(double zoom, CancellationToken cancellationToken = default)
     {
         _zoom = Math.Clamp(zoom, 0.5, 4);
-        RefreshFitSize();
+        await MainThread.InvokeOnMainThreadAsync(ReloadReadingPage).ConfigureAwait(false);
         await SavePositionAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -526,11 +491,18 @@ public sealed class PdfViewer : ContentView
         int pageIndex,
         CancellationToken cancellationToken)
     {
-        var pageWidth = pageIndex >= 0 && pageIndex < _pages.Count
-            ? _pages[pageIndex].Info.DisplayWidth
-            : 612;
-        var dpi = Math.Clamp(72d * (ReadingPageWidth / Math.Max(1, pageWidth)), 72, 192);
-        return RenderPageAsync(pageIndex, dpi, cancellationToken);
+        if (_session is null || pageIndex < 0 || pageIndex >= _pages.Count)
+            throw new InvalidOperationException("No PDF document is open.");
+        var width = (int)Math.Clamp(ReadingPaneWidth, 1, 16_384);
+        var height = (int)Math.Clamp(ReadingPaneHeight, 1, 16_384);
+        return Task.FromResult(_renderer.RenderViewport(
+            _session.Document,
+            _pages[pageIndex],
+            width,
+            height,
+            _zoom,
+            _rotation,
+            cancellationToken));
     }
 
     private async Task<PdfRenderedPage> RenderPageAsync(
@@ -636,8 +608,37 @@ public sealed class PdfViewer : ContentView
 
     private void OnPinchUpdated(object? sender, PinchGestureUpdatedEventArgs args)
     {
+        if (args.Status is GestureStatus.Started)
+            _pinchStart = _zoom;
         if (args.Status is GestureStatus.Running)
-            _ = SetZoomAsync(args.Scale * _zoom);
+            _ = SetZoomAsync(_pinchStart * args.Scale);
+    }
+
+    /// <inheritdoc />
+    protected override void OnSizeAllocated(double width, double height)
+    {
+        base.OnSizeAllocated(width, height);
+        if (width < 32 || height < 32)
+            return;
+        ApplyWorkspaceColumns();
+        var paneWidth = Math.Max(160, width - (ShowPageRail ? RailWidth + 24 : 24));
+        var paneHeight = Math.Max(160, height - 148);
+        if (Math.Abs(paneWidth - _paneWidth) < 1 && Math.Abs(paneHeight - _paneHeight) < 1)
+            return;
+        _paneWidth = paneWidth;
+        _paneHeight = paneHeight;
+        RefreshFitSize();
+        ReloadReadingPage();
+    }
+
+    private void ReloadReadingPage()
+    {
+        if (_readingPage.PageIndex < 0)
+            return;
+        var index = _readingPage.PageIndex;
+        _readingPage.PageIndex = -1;
+        _readingPage.PageIndex = index;
+        UpdateToolbar();
     }
 
     private void ApplyTheme()

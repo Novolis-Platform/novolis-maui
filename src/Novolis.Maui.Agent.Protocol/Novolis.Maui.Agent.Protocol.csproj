@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Agent.Protocol</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>MessagePack DTOs, LocalIpc helpers, and client for the MAUI UI agent protocol (ui.*).</Description>
+    <RootNamespace>Novolis.Maui.Agent.Protocol</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;NOV2201</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="MessagePack" />
+    <LibraryReference Include="Novolis.Transports.LocalIpc" />
+  </ItemGroup>
+</Project>

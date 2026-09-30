@@ -5,11 +5,15 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
+    <PackageVersion Include="MessagePack" Version="3.1.9" />
     <PackageVersion Include="Microsoft.Maui.Controls" Version="10.0.101" />
+    <PackageVersion Include="Novolis.Transports.LocalIpc" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Markup.Markdown.Mermaid.Rendering" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Markup.Mermaid" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Markup.Mermaid.Rendering" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Maui.GraphicalProfile" Version="2026.1.*" />
+    <PackageVersion Include="Novolis.Maui.Agent" Version="2026.1.*" />
+    <PackageVersion Include="Novolis.Maui.Agent.Protocol" Version="2026.1.*" />
     <PackageVersion Include="TUnit" Version="1.68.17" />
   </ItemGroup>
 </Project>

@@ -35,7 +35,11 @@ public sealed class PdfPageView : ContentView
             typeof(PdfPageView),
             320d,
             propertyChanged: static (bindable, _, _) =>
-                ((PdfPageView)bindable).ApplySize());
+            {
+                var page = (PdfPageView)bindable;
+                page.ApplySize();
+                page.QueueRender();
+            });
 
     /// <summary>Gets or sets the zero-based page index.</summary>
     public int PageIndex
@@ -57,10 +61,12 @@ public sealed class PdfPageView : ContentView
     /// <summary>Receives a render failure for the current cell.</summary>
     public Action<Exception>? RenderFailed { get; set; }
 
+    /// <summary>Last painted PNG for the MAUI UI agent.</summary>
+    public byte[]? TryGetLastFramePng() => _pngBytes is { Length: > 0 } ? _pngBytes : null;
+
     /// <summary>Creates a virtualized page cell.</summary>
     public PdfPageView()
     {
-        AutomationId = "PdfPageView";
         Padding = new Thickness(8);
         BackgroundColor = Profile.Surface;
         Content = new Border

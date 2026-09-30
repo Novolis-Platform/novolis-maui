@@ -44,6 +44,8 @@
 | `Novolis.Maui.Markdown` | `dotnet add package Novolis.Maui.Markdown` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Markdown/README.md) |
 | `Novolis.Maui.Mermaid` | `dotnet add package Novolis.Maui.Mermaid` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Mermaid/README.md) |
 | `Novolis.Maui.WebView` | `dotnet add package Novolis.Maui.WebView` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.WebView/README.md) |
+| `Novolis.Maui.Agent` | `dotnet add package Novolis.Maui.Agent` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Agent/README.md) |
+| `Novolis.Maui.Agent.Protocol` | `dotnet add package Novolis.Maui.Agent.Protocol` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Agent.Protocol/README.md) |
 
 For NuGet.org and Visual Studio, the **embedded** README.md inside each package is authoritative.
 
@@ -57,6 +59,7 @@ MAUI UI libraries that fill the Avalonia equivalents for Markdown, Mermaid, and 
 | `Novolis.Maui.Markdown` | `Novolis.Avalonia.Markdown` | `Novolis.Markup.Markdown` + `.Mermaid.Rendering` |
 | `Novolis.Maui.Mermaid` | `Novolis.Avalonia.Mermaid` | `Novolis.Markup.Mermaid.Rendering` |
 | `Novolis.Maui.WebView` | HtmlRenderer host inside Avalonia preview | CSP + navigation policy |
+| `Novolis.Maui.Agent` | `Novolis.Avalonia.Agent` | LocalIpc `ui.*` tree/screenshot/click |
 
 **MAUI isolation:** only `Novolis.Maui.*` libraries may take `Microsoft.Maui.*` package references (product apps may compose MAUI directly). Do not take Avalonia. `Novolis.Audio.Voice.Platform.Maui` is a grandfathered voice adapter.
 

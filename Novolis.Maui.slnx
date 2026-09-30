@@ -4,6 +4,12 @@
     <Project Path="src/Novolis.Maui.Mermaid/Novolis.Maui.Mermaid.csproj" />
     <Project Path="src/Novolis.Maui.Markdown/Novolis.Maui.Markdown.csproj" />
     <Project Path="src/Novolis.Maui.GraphicalProfile/Novolis.Maui.GraphicalProfile.csproj" />
+    <Project Path="src/Novolis.Maui.PdfViewer/Novolis.Maui.PdfViewer.csproj" />
+    <Project Path="src/Novolis.Maui.Agent.Protocol/Novolis.Maui.Agent.Protocol.csproj" />
+    <Project Path="src/Novolis.Maui.Agent/Novolis.Maui.Agent.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/MauiAgentDump/MauiAgentDump.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Novolis.Maui.Unit/Novolis.Maui.Unit.csproj" />
