@@ -1,3 +1,4 @@
+using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Layouts;
 using Novolis.Maui.GraphicalProfile;
 using Novolis.Pdf.Parsing;
@@ -14,10 +15,15 @@ public sealed class PdfReadingSurface : ContentView
     private const int CacheLimit = 4;
     private readonly AbsoluteLayout _stage = new()
     {
-        BackgroundColor = Profile.Background,
+        BackgroundColor = Profile.Border,
         HorizontalOptions = LayoutOptions.Fill,
         VerticalOptions = LayoutOptions.Fill,
         IsClippedToBounds = true,
+    };
+    private readonly BoxView _gap = new()
+    {
+        Color = Profile.Border,
+        InputTransparent = true,
     };
     private readonly Image[] _layers = new Image[LayerCount];
     private readonly int[] _layerPages = [-1, -1, -1];
@@ -38,18 +44,23 @@ public sealed class PdfReadingSurface : ContentView
     private int _rotation;
     private double _scrollY;
     private double _scrollX;
-    private double _pinchZoom = 1;
     private bool _pinching;
-    private double _panX;
-    private double _panY;
+    private double _pinchSpan;
+    private PointF _lastPoint;
+    private PointF _tapStart;
+    private DateTime _tapDown;
+    private DateTime _lastTap;
     private int _pageIndex;
 
     /// <summary>Creates the reading surface.</summary>
     public PdfReadingSurface()
     {
         AutomationId = "PdfReadingPage";
-        BackgroundColor = Profile.Background;
+        BackgroundColor = Profile.Border;
         IsClippedToBounds = true;
+        AbsoluteLayout.SetLayoutFlags(_gap, AbsoluteLayoutFlags.All);
+        AbsoluteLayout.SetLayoutBounds(_gap, new Rect(0, 0, 1, 1));
+        _stage.Add(_gap);
         for (var i = 0; i < LayerCount; i++)
         {
             var image = new Image
@@ -65,13 +76,23 @@ public sealed class PdfReadingSurface : ContentView
             _stage.Add(image);
         }
 
-        var pan = new PanGestureRecognizer();
-        pan.PanUpdated += OnPan;
-        var pinch = new PinchGestureRecognizer();
-        pinch.PinchUpdated += OnPinch;
-        _stage.GestureRecognizers.Add(pan);
-        _stage.GestureRecognizers.Add(pinch);
-        Content = _stage;
+        _stage.InputTransparent = true;
+        var touch = new GraphicsView
+        {
+            BackgroundColor = Colors.Transparent,
+            Drawable = new PdfTouchLayer(),
+            HorizontalOptions = LayoutOptions.Fill,
+            VerticalOptions = LayoutOptions.Fill,
+            InputTransparent = false,
+        };
+        touch.StartInteraction += OnTouchStart;
+        touch.DragInteraction += OnTouchDrag;
+        touch.EndInteraction += OnTouchEnd;
+        touch.CancelInteraction += OnTouchCancel;
+        var root = new Grid();
+        root.Add(_stage);
+        root.Add(touch);
+        Content = root;
         SizeChanged += (_, _) =>
         {
             if (Width > 32 && Height > 32)
@@ -90,6 +111,14 @@ public sealed class PdfReadingSurface : ContentView
 
     /// <summary>Current zoom relative to Fit.</summary>
     public double Zoom => _zoom;
+
+    /// <summary>Applies graphical-profile colors to the page stack gap.</summary>
+    public void ApplyChrome()
+    {
+        BackgroundColor = Profile.Border;
+        _stage.BackgroundColor = Profile.Border;
+        _gap.Color = Profile.Border;
+    }
 
     /// <summary>Binds a parsed document. Pass null to clear.</summary>
     public void Bind(
@@ -134,6 +163,8 @@ public sealed class PdfReadingSurface : ContentView
         var height = System.Math.Max(160, paneHeight);
         if (System.Math.Abs(width - _paneWidth) < 8 && System.Math.Abs(height - _paneHeight) < 8)
             return;
+        if (System.Math.Abs(width - _paneWidth) >= 48 || System.Math.Abs(height - _paneHeight) >= 48)
+            ClearCache();
         _paneWidth = width;
         _paneHeight = height;
         Relayout(keepPage: true);
@@ -159,6 +190,11 @@ public sealed class PdfReadingSurface : ContentView
     {
         if (_boxes.Length == 0)
             return;
+        var density = PdfViewerLayout.Density;
+        if (density > 1.2 && System.Math.Abs(deltaY) > ViewportHeight)
+            deltaY /= density;
+        if (density > 1.2 && System.Math.Abs(deltaX) > ViewportWidth)
+            deltaX /= density;
         var pageWidth = _boxes[System.Math.Clamp(_pageIndex, 0, _boxes.Length - 1)].Width;
         _scrollX = PdfDocumentStack.PageX(pageWidth, ViewportWidth, _scrollX - deltaX);
         _scrollY = PdfDocumentStack.ClampScroll(_scrollY + deltaY, DocumentHeight, ViewportHeight);
@@ -167,7 +203,24 @@ public sealed class PdfReadingSurface : ContentView
     }
 
     /// <summary>Zooms, keeping the viewport midpoint stable.</summary>
-    public void SetZoom(double zoom) => ApplyZoom(zoom, _paneHeight * 0.5, rasterize: true);
+    public void SetZoom(double zoom) => ApplyZoom(zoom, ViewportHeight * 0.5, rasterize: true);
+
+    /// <summary>Applies an incremental pinch factor without re-rasterizing.</summary>
+    public void ScaleBy(double factor)
+    {
+        if (factor <= 0 || !double.IsFinite(factor))
+            return;
+        _pinching = true;
+        ApplyZoom(_zoom * factor, ViewportHeight * 0.5, rasterize: false);
+    }
+
+    /// <summary>Finishes a pinch and paints at the new scale.</summary>
+    public void EndScale()
+    {
+        ApplyZoom(_zoom, ViewportHeight * 0.5, rasterize: true);
+        _pinching = false;
+        _pinchSpan = 0;
+    }
 
     /// <summary>Drops bitmaps and the document.</summary>
     public void Clear()
@@ -465,49 +518,94 @@ public sealed class PdfReadingSurface : ContentView
         }
     }
 
-    private void OnPan(object? sender, PanUpdatedEventArgs args)
+    private void OnTouchStart(object? sender, TouchEventArgs args)
     {
-        switch (args.StatusType)
+        var touches = args.Touches;
+        if (touches.Length >= 2)
         {
-            case GestureStatus.Started:
-                _panX = 0;
-                _panY = 0;
-                break;
-            case GestureStatus.Running:
-                if (_pinching)
-                    return;
-                ScrollBy(-(args.TotalX - _panX), -(args.TotalY - _panY));
-                _panX = args.TotalX;
-                _panY = args.TotalY;
-                break;
-            default:
-                _panX = 0;
-                _panY = 0;
-                break;
+            _pinching = true;
+            _pinchSpan = Span(touches);
+            return;
+        }
+
+        if (touches.Length == 1)
+        {
+            _lastPoint = touches[0];
+            _tapStart = touches[0];
+            _tapDown = DateTime.UtcNow;
         }
     }
 
-    private void OnPinch(object? sender, PinchGestureUpdatedEventArgs args)
+    private void OnTouchDrag(object? sender, TouchEventArgs args)
     {
-        switch (args.Status)
+        var touches = args.Touches;
+        if (touches.Length >= 2)
         {
-            case GestureStatus.Started:
-                _pinching = true;
-                _pinchZoom = _zoom;
-                _stage.AnchorX = 0.5;
-                _stage.AnchorY = 0.5;
-                break;
-            case GestureStatus.Running:
-                _zoom = System.Math.Clamp(_pinchZoom * args.Scale, 0.5, 4);
-                _stage.Scale = _zoom / System.Math.Max(0.5, _pinchZoom);
-                ZoomChanged?.Invoke(this, _zoom);
-                break;
-            default:
-                _stage.Scale = 1;
-                ApplyZoom(System.Math.Clamp(_pinchZoom * System.Math.Max(0.01, args.Scale), 0.5, 4), _paneHeight * 0.5, rasterize: true);
-                _pinching = false;
-                break;
+            var span = Span(touches);
+            if (_pinchSpan > 8 && span > 8)
+                ScaleBy(span / _pinchSpan);
+            _pinchSpan = span;
+            _pinching = true;
+            return;
         }
+
+        if (_pinching || touches.Length != 1)
+            return;
+
+        var point = touches[0];
+        ScrollBy(_lastPoint.X - point.X, _lastPoint.Y - point.Y);
+        _lastPoint = point;
+    }
+
+    private void OnTouchEnd(object? sender, TouchEventArgs args)
+    {
+        if (_pinching)
+        {
+            EndScale();
+            return;
+        }
+
+        var touches = args.Touches;
+        if (touches.Length != 1)
+            return;
+
+        var point = touches[0];
+        var moved = Distance(point, _tapStart);
+        var held = DateTime.UtcNow - _tapDown;
+        if (moved > 16 || held > TimeSpan.FromMilliseconds(400))
+            return;
+
+        var now = DateTime.UtcNow;
+        if (now - _lastTap < TimeSpan.FromMilliseconds(350))
+        {
+            ApplyZoom(_zoom < 1.75 ? 2.5 : 1, ViewportHeight * 0.5, rasterize: true);
+            _lastTap = DateTime.MinValue;
+            return;
+        }
+
+        _lastTap = now;
+    }
+
+    private void OnTouchCancel(object? sender, EventArgs args)
+    {
+        if (_pinching)
+            EndScale();
+    }
+
+    private static float Span(PointF[] touches)
+    {
+        if (touches.Length < 2)
+            return 0;
+        var dx = touches[0].X - touches[1].X;
+        var dy = touches[0].Y - touches[1].Y;
+        return MathF.Sqrt((dx * dx) + (dy * dy));
+    }
+
+    private static float Distance(PointF a, PointF b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return MathF.Sqrt((dx * dx) + (dy * dy));
     }
 
     private void RaisePage(int index)

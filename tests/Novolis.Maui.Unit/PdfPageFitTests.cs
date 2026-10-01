@@ -37,6 +37,22 @@ public sealed class PdfPageFitTests
     }
 
     [Test]
+    public async Task ViewDip_KeepsLandscapeWidth()
+    {
+        await Assert.That(PdfViewerLayout.ViewDip(914, screenDip: 411, screenPixels: 1080))
+            .IsEqualTo(914);
+    }
+
+    [Test]
+    public async Task ViewDip_ScalesAPixelSizedRotateReport()
+    {
+        await Assert.That(PdfViewerLayout.ViewDip(1080, screenDip: 411, screenPixels: 1080))
+            .IsEqualTo(411);
+        await Assert.That(PdfViewerLayout.ViewDip(2640, screenDip: 880, screenPixels: 2640))
+            .IsEqualTo(880);
+    }
+
+    [Test]
     public async Task PixelSize_UsesDisplayDensity()
     {
         var pixels = PdfViewerLayout.PixelSize(360, 540, 3);

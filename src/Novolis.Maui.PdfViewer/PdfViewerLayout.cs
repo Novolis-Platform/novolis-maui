@@ -54,18 +54,41 @@ public static class PdfViewerLayout
     public static double HeightDip(double viewHeight = 0) =>
         SanitizeDip(viewHeight, horizontal: false);
 
+    /// <summary>
+    /// Converts a MAUI view size to DIP. A value that matches the pixel edge is a bad
+    /// post-rotate report; a larger landscape DIP is real and must not snap back to portrait.
+    /// </summary>
+    public static double ViewDip(double viewSize, double screenDip, double screenPixels)
+    {
+        if (viewSize <= 32)
+            return screenDip > 32 ? screenDip : 0;
+        if (screenPixels > 32 && System.Math.Abs(viewSize - screenPixels) <= screenPixels * 0.08)
+            return screenDip > 32 ? screenDip : viewSize;
+        return viewSize;
+    }
+
     private static double SanitizeDip(double viewSize, bool horizontal)
     {
         var screen = ScreenDip(horizontal);
-        if (viewSize > 32)
-        {
-            // After a rotate MAUI can report pixels. Never let that multiply by density again.
-            if (screen > 32 && viewSize > screen * 1.25)
-                return screen;
-            return viewSize;
-        }
-
+        var pixels = ScreenPixels(horizontal);
+        var dip = ViewDip(viewSize, screen, pixels);
+        if (dip > 32)
+            return dip;
         return screen > 32 ? screen : horizontal ? 360 : 640;
+    }
+
+    private static double ScreenPixels(bool horizontal)
+    {
+        try
+        {
+            var info = DeviceDisplay.MainDisplayInfo;
+            var pixels = horizontal ? info.Width : info.Height;
+            return pixels > 32 ? pixels : 0;
+        }
+        catch (InvalidOperationException)
+        {
+            return 0;
+        }
     }
 
     private static double ScreenDip(bool horizontal)

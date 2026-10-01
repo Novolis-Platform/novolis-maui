@@ -19,6 +19,7 @@ public sealed class PdfViewer : ContentView
     private const double ThumbnailDpi = 56;
     private const double RailWidth = 156;
     private FlexLayout? _toolbar;
+    private Grid? _compactBar;
     private readonly PdfLimits _limits;
     private readonly IPdfDocumentStateStore? _stateStore;
     private readonly PdfSkiaPageRenderer _renderer;
@@ -90,6 +91,10 @@ public sealed class PdfViewer : ContentView
         _outlineTabButton = CreateToolbarButton("Contents", "PdfOutlineTab", () => ShowSidebar(outline: true));
         _rotateButton = CreateToolbarButton("Rotate", "PdfRotate", () => RotateAsync());
         _pageLabel = CreateLabel("0 / 0", "PdfPageLabel");
+        _pageLabel.BackgroundColor = Colors.Transparent;
+        _pageLabel.HorizontalTextAlignment = TextAlignment.Center;
+        _pageLabel.HorizontalOptions = LayoutOptions.Center;
+        _pageLabel.WidthRequest = 80;
         _pageEntry = new Entry
         {
             AutomationId = "PdfPageEntry",
@@ -198,6 +203,7 @@ public sealed class PdfViewer : ContentView
         _readingSurface.SizeChanged += (_, _) => UpdatePaneFromReadingStack();
         _workspace = new Grid
         {
+            BackgroundColor = Profile.Border,
             ColumnSpacing = 8,
             Padding = new Thickness(8, 0, 8, 8),
             ColumnDefinitions =
@@ -220,6 +226,7 @@ public sealed class PdfViewer : ContentView
             JustifyContent = FlexJustify.Start,
             AlignItems = FlexAlignItems.Center,
             AlignContent = FlexAlignContent.Start,
+            BackgroundColor = Profile.Surface,
             Padding = new Thickness(8, 6),
             Children =
             {
@@ -237,6 +244,22 @@ public sealed class PdfViewer : ContentView
                 _pageEntry,
                 _searchBar,
                 _searchStatus,
+            },
+        };
+        _compactBar = new Grid
+        {
+            BackgroundColor = Profile.Surface,
+            Padding = new Thickness(6, 4),
+            ColumnSpacing = 4,
+            IsVisible = false,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
             },
         };
 
@@ -264,6 +287,7 @@ public sealed class PdfViewer : ContentView
         };
         layout.Add(_viewerHeader, 0, 0);
         layout.Add(_toolbar, 0, 1);
+        layout.Add(_compactBar, 0, 1);
         layout.Add(_workspace, 0, 2);
         Content = layout;
 
@@ -343,6 +367,23 @@ public sealed class PdfViewer : ContentView
 
         _readingSurface.ScrollBy(-(delta / 120.0) * 80);
         return true;
+    }
+
+    /// <summary>Applies an incremental pinch factor from a host scale detector.</summary>
+    public void ScaleReading(double factor)
+    {
+        if (_pages.Count == 0)
+            return;
+        _readingSurface.ScaleBy(factor);
+    }
+
+    /// <summary>Finishes a host-driven pinch and paints at the new scale.</summary>
+    public void EndReadingScale()
+    {
+        if (_pages.Count == 0)
+            return;
+        _readingSurface.EndScale();
+        _ = SavePositionAsync(CancellationToken.None);
     }
 
     private double ReadingPaneWidth => System.Math.Max(160, _paneWidth);
@@ -679,9 +720,15 @@ public sealed class PdfViewer : ContentView
         {
             var toolbarWidth = PdfViewerLayout.WidthDip(Width);
             _toolbar.WidthRequest = System.Math.Max(160, toolbarWidth);
-            _toolbar.Wrap = compact ? FlexWrap.NoWrap : FlexWrap.Wrap;
+            _toolbar.Wrap = FlexWrap.Wrap;
             _toolbar.JustifyContent = FlexJustify.Start;
-            _toolbar.Padding = compact ? new Thickness(6, 4) : new Thickness(8, 6);
+            _toolbar.Padding = new Thickness(8, 6);
+            _toolbar.BackgroundColor = Profile.Surface;
+        }
+        if (_compactBar is not null)
+        {
+            _compactBar.WidthRequest = System.Math.Max(160, PdfViewerLayout.WidthDip(Width));
+            _compactBar.BackgroundColor = Profile.Surface;
         }
         _viewerHeader.IsVisible = !compact;
         _openButton.IsVisible = compact;
@@ -714,8 +761,13 @@ public sealed class PdfViewer : ContentView
         {
             button.Padding = compact ? new Thickness(8, 6) : new Thickness(12, 8);
             button.MinimumHeightRequest = compact ? 40 : GraphicalProfileColors.TouchTarget;
-            button.MinimumWidthRequest = compact ? 40 : -1;
+            button.MinimumWidthRequest = compact ? 44 : -1;
             button.FontSize = compact ? 14 : GraphicalProfileColors.NavigationSize;
+            if (compact)
+            {
+                button.BackgroundColor = Profile.Surface;
+                button.TextColor = Profile.Text;
+            }
         }
         _pageLabel.FontSize = compact ? 13 : GraphicalProfileColors.NavigationSize;
         _workspace.Padding = compact ? new Thickness(0) : new Thickness(8, 0, 8, 8);
@@ -791,21 +843,26 @@ public sealed class PdfViewer : ContentView
 
     private void ApplyPhoneToolbar(bool compact)
     {
-        if (_toolbar is null || compact == _phoneToolbar)
+        if (_toolbar is null || _compactBar is null || compact == _phoneToolbar)
             return;
         _phoneToolbar = compact;
         _toolbar.Children.Clear();
+        _compactBar.Clear();
         if (compact)
         {
-            _toolbar.Children.Add(_openButton);
-            _toolbar.Children.Add(_outlineTabButton);
-            _toolbar.Children.Add(_previousButton);
-            _toolbar.Children.Add(_pageLabel);
-            _toolbar.Children.Add(_nextButton);
-            _toolbar.Children.Add(_fitButton);
+            _toolbar.IsVisible = false;
+            _compactBar.IsVisible = true;
+            _compactBar.Add(_openButton, 0, 0);
+            _compactBar.Add(_outlineTabButton, 1, 0);
+            _compactBar.Add(_previousButton, 2, 0);
+            _compactBar.Add(_pageLabel, 3, 0);
+            _compactBar.Add(_nextButton, 4, 0);
+            _compactBar.Add(_fitButton, 5, 0);
             return;
         }
 
+        _compactBar.IsVisible = false;
+        _toolbar.IsVisible = true;
         _toolbar.Children.Add(_openButton);
         _toolbar.Children.Add(_pagesTabButton);
         _toolbar.Children.Add(_outlineTabButton);
@@ -1074,7 +1131,14 @@ public sealed class PdfViewer : ContentView
     private void ApplyTheme()
     {
         BackgroundColor = Profile.Background;
-        _readingSurface.BackgroundColor = Profile.Background;
+        _readingSurface.ApplyChrome();
+        _workspace.BackgroundColor = Profile.Border;
+        if (_toolbar is not null)
+            _toolbar.BackgroundColor = Profile.Surface;
+        if (_compactBar is not null)
+            _compactBar.BackgroundColor = Profile.Surface;
+        _pageLabel.TextColor = Profile.Text;
+        _pageLabel.BackgroundColor = Colors.Transparent;
         _pageRail.BackgroundColor = Profile.Surface;
         _outlineList.BackgroundColor = Profile.Surface;
         _sidebar.BackgroundColor = Profile.Surface;

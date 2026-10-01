@@ -4,7 +4,7 @@ namespace Novolis.Maui.PdfViewer;
 public static class PdfDocumentStack
 {
     /// <summary>Gap between stacked pages, in DIP.</summary>
-    public const double Gutter = 16;
+    public const double Gutter = 8;
 
     /// <summary>Lays out every page top-to-bottom at the current fit and zoom.</summary>
     public static PdfPageBox[] Layout(
