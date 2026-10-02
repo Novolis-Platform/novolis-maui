@@ -4,7 +4,7 @@ using Novolis.Maui.WebView;
 namespace Novolis.Maui.Markdown;
 
 /// <summary>Live HTML preview of Markdown source with themed Mermaid diagrams in a locked-down WebView.</summary>
-public sealed class MarkdownView : ContentView
+public sealed class MarkdownView : Grid
 {
     /// <summary>Markdown source to render.</summary>
     public static readonly BindableProperty MarkdownProperty = BindableProperty.Create(
@@ -47,11 +47,12 @@ public sealed class MarkdownView : ContentView
         propertyChanged: OnContentChanged);
 
     private readonly SecureHtmlWebView _web = new();
-    private readonly ZoomableMediaPreview _preview = new();
+    private readonly ZoomableMediaPreview _previewChrome = new();
     private MarkdownHtmlActionSink _actions = new();
     private bool _refreshQueued;
     private string? _renderedHtml;
     private int _refreshGeneration;
+    private bool _previewOpen;
 
     /// <summary>Creates a Markdown viewer.</summary>
     public MarkdownView()
@@ -60,8 +61,14 @@ public sealed class MarkdownView : ContentView
         VerticalOptions = LayoutOptions.Fill;
         _web.InnerView.AutomationId = "DocumentViewer";
         _web.HostNavigationRequested += OnHostNavigation;
-        _preview.Closed += (_, _) => Content = _web;
-        Content = _web;
+        _previewChrome.Closed += (_, _) => RestoreDocument();
+
+        RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+        RowDefinitions.Add(new RowDefinition(GridLength.Star));
+        Add(_previewChrome);
+        Grid.SetRow(_previewChrome, 0);
+        Add(_web);
+        Grid.SetRow(_web, 1);
     }
 
     /// <summary>Gets or sets Markdown source used when <see cref="Html"/> is not set.</summary>
@@ -110,9 +117,7 @@ public sealed class MarkdownView : ContentView
     {
         if ((uint)index >= (uint)_actions.Previews.Count)
             return false;
-        var asset = _actions.Previews[index];
-        _preview.Show(asset.DataUri, asset.Caption);
-        Content = _preview;
+        ShowPreview(_actions.Previews[index]);
         return true;
     }
 
@@ -189,9 +194,11 @@ public sealed class MarkdownView : ContentView
 
     private void AssignHtml(string html)
     {
-        if (string.Equals(html, _renderedHtml, StringComparison.Ordinal))
+        if (string.Equals(html, _renderedHtml, StringComparison.Ordinal) && !_previewOpen)
             return;
         _renderedHtml = html;
+        if (_previewOpen)
+            return;
         _web.Html = html;
     }
 
@@ -210,9 +217,26 @@ public sealed class MarkdownView : ContentView
 
         if ((uint)index >= (uint)_actions.Previews.Count)
             return;
-        var asset = _actions.Previews[index];
-        _preview.Show(asset.DataUri, asset.Caption);
-        Content = _preview;
+        ShowPreview(_actions.Previews[index]);
+    }
+
+    private void ShowPreview(MarkdownPreviewAsset asset)
+    {
+        _previewOpen = true;
+        _previewChrome.Show(_web, asset.Caption);
+        _web.Html = MediaPreviewHtml.Wrap(asset.DataUri, asset.Caption);
+    }
+
+    private void RestoreDocument()
+    {
+        if (!_previewOpen)
+            return;
+        _previewOpen = false;
+        _web.Scale = 1;
+        _web.TranslationX = 0;
+        _web.TranslationY = 0;
+        if (!string.IsNullOrEmpty(_renderedHtml))
+            _web.Html = _renderedHtml;
     }
 
     private static void OnContentChanged(BindableObject bindable, object oldValue, object newValue)
