@@ -219,6 +219,7 @@ public sealed class NdjsonSliceView : ContentView
         _takePicker.BackgroundColor = Profile.Raised;
     }
 
+    /// <inheritdoc />
     protected override void OnParentSet()
     {
         base.OnParentSet();
