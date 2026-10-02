@@ -45,6 +45,50 @@ public sealed class MapViewTests
     }
 
     [Test]
+    public async Task MapView_overlay_models_preserve_labels_and_styling()
+    {
+        var first = new GeoCoordinate(58.14, 7.99);
+        var second = new GeoCoordinate(58.15, 8.01);
+        var map = new MapView
+        {
+            Circles =
+            [
+                new MapCircleOverlay(
+                    "area",
+                    new GeoCircle(first, 200),
+                    "Area",
+                    Colors.Red),
+            ],
+            Tracks =
+            [
+                new MapTrackOverlay(
+                    "route",
+                    [first, second],
+                    "Route",
+                    Colors.Blue,
+                    Colors.Green),
+            ],
+            Polygons =
+            [
+                new MapPolygonOverlay(
+                    "zone",
+                    [first, second, new GeoCoordinate(58.16, 8.02)],
+                    "Zone",
+                    Colors.Purple,
+                    Colors.Yellow),
+            ],
+        };
+
+        await Assert.That(map.Circles![0].Label).IsEqualTo("Area");
+        await Assert.That(map.Circles[0].Ink).IsEqualTo(Colors.Red);
+        await Assert.That(map.Tracks![0].Label).IsEqualTo("Route");
+        await Assert.That(map.Tracks[0].FromInk).IsEqualTo(Colors.Blue);
+        await Assert.That(map.Tracks[0].ToInk).IsEqualTo(Colors.Green);
+        await Assert.That(map.Polygons![0].Label).IsEqualTo("Zone");
+        await Assert.That(map.Polygons[0].Fill).IsEqualTo(Colors.Yellow);
+    }
+
+    [Test]
     public async Task MapView_opt_in_drawing_and_copy_return_developer_data()
     {
         var first = new GeoCoordinate(58.14, 7.99);

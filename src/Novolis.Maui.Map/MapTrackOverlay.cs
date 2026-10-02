@@ -1,3 +1,4 @@
+using Microsoft.Maui.Graphics;
 using Novolis.Math.Geometry;
 
 namespace Novolis.Maui.Map;
@@ -6,4 +7,6 @@ namespace Novolis.Maui.Map;
 public sealed record MapTrackOverlay(
     string Id,
     IReadOnlyList<GeoCoordinate> Points,
-    string? Label = null);
+    string? Label = null,
+    Color? FromInk = null,
+    Color? ToInk = null);
