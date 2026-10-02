@@ -1,16 +1,16 @@
+using Novolis.Maui.WebView;
 using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
 
 namespace Novolis.Maui.Markdown;
 
-/// <summary>Fullscreen mermaid or image preview with pinch, pan, wheel, and button zoom.</summary>
+/// <summary>Fullscreen mermaid or image preview with pinch, pan, and button zoom.</summary>
 public sealed class ZoomableMediaPreview : Grid
 {
     private const double MinimumZoom = 0.4;
     private const double MaximumZoom = 8;
-    private readonly Image _image = new()
+    private readonly SecureHtmlWebView _surface = new()
     {
         AutomationId = "MediaPreviewImage",
-        Aspect = Aspect.AspectFit,
         HorizontalOptions = LayoutOptions.Fill,
         VerticalOptions = LayoutOptions.Fill,
     };
@@ -32,6 +32,8 @@ public sealed class ZoomableMediaPreview : Grid
     {
         IsVisible = false;
         AutomationId = "MediaPreview";
+        HorizontalOptions = LayoutOptions.Fill;
+        VerticalOptions = LayoutOptions.Fill;
 
         var close = ChromeButton("Close", "MediaPreviewClose", Hide);
         var zoomOut = ChromeButton("−", "MediaPreviewZoomOut", () => SetZoom(_zoom / 1.25));
@@ -57,13 +59,20 @@ public sealed class ZoomableMediaPreview : Grid
         bar.Add(close, 4, 0);
 
         var stage = new Grid { IsClippedToBounds = true };
-        stage.Add(_image);
+        stage.Add(_surface);
+        var overlay = new BoxView
+        {
+            BackgroundColor = Colors.Transparent,
+            HorizontalOptions = LayoutOptions.Fill,
+            VerticalOptions = LayoutOptions.Fill,
+        };
         var pinch = new PinchGestureRecognizer();
         pinch.PinchUpdated += OnPinch;
         var pan = new PanGestureRecognizer();
         pan.PanUpdated += OnPan;
-        stage.GestureRecognizers.Add(pinch);
-        stage.GestureRecognizers.Add(pan);
+        overlay.GestureRecognizers.Add(pinch);
+        overlay.GestureRecognizers.Add(pan);
+        stage.Add(overlay);
 
         RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         RowDefinitions.Add(new RowDefinition(GridLength.Star));
@@ -77,10 +86,10 @@ public sealed class ZoomableMediaPreview : Grid
     /// <summary>Raised after <see cref="Hide"/> so a host can restore its document view.</summary>
     public event EventHandler? Closed;
 
-    /// <summary>Shows <paramref name="source"/> full screen.</summary>
-    public void Show(ImageSource source, string caption)
+    /// <summary>Shows a mermaid or image <c>data:</c> URI full screen.</summary>
+    public void Show(string dataUri, string caption)
     {
-        _image.Source = source;
+        _surface.Html = MediaPreviewHtml.Wrap(dataUri, caption);
         _caption.Text = caption;
         SetZoom(1);
         IsVisible = true;
@@ -90,7 +99,7 @@ public sealed class ZoomableMediaPreview : Grid
     public void Hide()
     {
         IsVisible = false;
-        _image.Source = null;
+        _surface.Html = null;
         Closed?.Invoke(this, EventArgs.Empty);
     }
 
@@ -103,11 +112,11 @@ public sealed class ZoomableMediaPreview : Grid
     private void SetZoom(double zoom)
     {
         _zoom = System.Math.Clamp(zoom, MinimumZoom, MaximumZoom);
-        _image.Scale = _zoom;
+        _surface.Scale = _zoom;
         if (System.Math.Abs(_zoom - 1) < 0.01)
         {
-            _image.TranslationX = 0;
-            _image.TranslationY = 0;
+            _surface.TranslationX = 0;
+            _surface.TranslationY = 0;
         }
     }
 
@@ -142,8 +151,8 @@ public sealed class ZoomableMediaPreview : Grid
                     break;
                 }
 
-                _image.TranslationX += args.TotalX - _panX;
-                _image.TranslationY += args.TotalY - _panY;
+                _surface.TranslationX += args.TotalX - _panX;
+                _surface.TranslationY += args.TotalY - _panY;
                 _panX = args.TotalX;
                 _panY = args.TotalY;
                 break;

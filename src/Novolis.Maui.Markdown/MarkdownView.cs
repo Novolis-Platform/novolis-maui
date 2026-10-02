@@ -200,7 +200,7 @@ public sealed class MarkdownView : ContentView
         if ((uint)index >= (uint)_actions.Previews.Count)
             return;
         var asset = _actions.Previews[index];
-        _preview.Show(MarkdownMediaSource.FromDataUri(asset.DataUri), asset.Caption);
+        _preview.Show(asset.DataUri, asset.Caption);
         Content = _preview;
     }
 
