@@ -34,6 +34,19 @@ public sealed class UpdateStatusViewTests
     }
 
     [Test]
+    public async Task View_supports_inline_toast_and_popup_notification_modes()
+    {
+        var view = new UpdateStatusView();
+
+        view.NotificationMode = UpdateNotificationMode.Inline;
+        await Assert.That(view.NotificationMode).IsEqualTo(UpdateNotificationMode.Inline);
+        view.NotificationMode = UpdateNotificationMode.Toast;
+        await Assert.That(view.NotificationMode).IsEqualTo(UpdateNotificationMode.Toast);
+        view.NotificationMode = UpdateNotificationMode.Popup;
+        await Assert.That(view.NotificationMode).IsEqualTo(UpdateNotificationMode.Popup);
+    }
+
+    [Test]
     public async Task View_child_controls_have_touch_sized_accessible_ids()
     {
         var view = new UpdateStatusView();

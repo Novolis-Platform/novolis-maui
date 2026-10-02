@@ -1,6 +1,5 @@
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls;
-using Microsoft.Maui.Graphics;
 using Novolis.Maui.GraphicalProfile;
 using Novolis.Registry.Primitives.Updates;
 using Novolis.Registry.Updates;
@@ -70,7 +69,7 @@ public sealed class UpdateStatusView : ContentView
         SemanticProperties.SetDescription(this, "Application updates");
         _releaseNotes.LineBreakMode = LineBreakMode.WordWrap;
         _error.LineBreakMode = LineBreakMode.WordWrap;
-        _error.TextColor = Colors.Red;
+        _error.SetDynamicResource(Label.TextColorProperty, Profile.DangerResourceKey);
 
         _checkButton.Clicked += async (_, _) => await CheckAsync().ConfigureAwait(false);
         _releaseButton.Clicked += async (_, _) => await OpenReleaseAsync().ConfigureAwait(false);
