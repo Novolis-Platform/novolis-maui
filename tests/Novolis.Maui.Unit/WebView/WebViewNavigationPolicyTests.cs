@@ -8,6 +8,8 @@ public sealed class WebViewNavigationPolicyTests
     [Arguments(null, WebViewNavigationDecision.Allow)]
     [Arguments("", WebViewNavigationDecision.Allow)]
     [Arguments("about:blank", WebViewNavigationDecision.Allow)]
+    [Arguments("about:srcdoc", WebViewNavigationDecision.Allow)]
+    [Arguments("data:text/html,<h1>Hi</h1>", WebViewNavigationDecision.Allow)]
     [Arguments("https://example.com/doc", WebViewNavigationDecision.OpenExternally)]
     [Arguments("http://example.com", WebViewNavigationDecision.OpenExternally)]
     [Arguments("mailto:a@b.c", WebViewNavigationDecision.OpenExternally)]

@@ -14,15 +14,17 @@ public static class MarkdownHtml
         string markdown,
         MarkdownViewTheme theme = MarkdownViewTheme.StudioDark,
         string? title = null,
-        string? sourceDirectory = null) =>
-        Build(markdown, theme, title, sourceDirectory).Document;
+        string? sourceDirectory = null,
+        bool renderMermaid = true) =>
+        Build(markdown, theme, title, sourceDirectory, renderMermaid).Document;
 
     /// <summary>Converts Markdown to CSP HTML plus copy/preview payloads.</summary>
     public static MarkdownHtmlDocumentBuild Build(
         string markdown,
         MarkdownViewTheme theme = MarkdownViewTheme.StudioDark,
         string? title = null,
-        string? sourceDirectory = null)
+        string? sourceDirectory = null,
+        bool renderMermaid = true)
     {
         var (htmlTheme, mermaidTheme) = MarkdownViewThemeMap.Map(theme);
         var built = MermaidMarkdownHtmlRenderer.Build(
@@ -30,7 +32,8 @@ public static class MarkdownHtml
             htmlTheme,
             mermaidTheme,
             title,
-            sourceDirectory);
+            sourceDirectory,
+            renderMermaid);
         return built with { Document = HtmlContentSecurityPolicy.Apply(built.Document) };
     }
 }

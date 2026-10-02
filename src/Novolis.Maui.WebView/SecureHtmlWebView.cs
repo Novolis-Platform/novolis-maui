@@ -17,12 +17,20 @@ public sealed class SecureHtmlWebView : ContentView
         propertyChanged: OnHtmlChanged);
 
     private readonly MauiWebView _viewer = new();
+    private string? _documentFileUri;
+    private string? _appliedHtml;
 
     /// <summary>Creates a locked-down HTML WebView.</summary>
     public SecureHtmlWebView()
     {
+        HorizontalOptions = LayoutOptions.Fill;
+        VerticalOptions = LayoutOptions.Fill;
+        _viewer.HorizontalOptions = LayoutOptions.Fill;
+        _viewer.VerticalOptions = LayoutOptions.Fill;
         Content = _viewer;
         _viewer.Navigating += OnNavigating;
+        _viewer.HandlerChanged += (_, _) => ApplyHtml();
+        _viewer.Loaded += (_, _) => ApplyHtml();
     }
 
     /// <summary>Raised when the user activates an http(s) or mailto URI that must open outside the WebView.</summary>
@@ -43,17 +51,41 @@ public sealed class SecureHtmlWebView : ContentView
 
     private static void OnHtmlChanged(BindableObject bindable, object oldValue, object newValue)
     {
-        if (bindable is not SecureHtmlWebView view)
+        if (bindable is SecureHtmlWebView view)
+            view.ApplyHtml();
+    }
+
+    private void ApplyHtml()
+    {
+        var html = Html;
+        if (string.Equals(html, _appliedHtml, StringComparison.Ordinal) && _viewer.Source is not null)
             return;
 
-        var html = newValue as string;
-        view._viewer.Source = string.IsNullOrWhiteSpace(html)
-            ? null
-            : new HtmlWebViewSource { Html = html };
+        HtmlTempDocument.TryDelete(_documentFileUri);
+        _documentFileUri = null;
+        _appliedHtml = html;
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            _viewer.Source = null;
+            return;
+        }
+
+        // WinUI NavigateToString stays blank or refuses large documents. Load from a temp file instead.
+        if (OperatingSystem.IsWindows())
+        {
+            _documentFileUri = HtmlTempDocument.Write(html);
+            _viewer.Source = new UrlWebViewSource { Url = _documentFileUri };
+            return;
+        }
+
+        _viewer.Source = new HtmlWebViewSource { Html = html };
     }
 
     private async void OnNavigating(object? sender, WebNavigatingEventArgs args)
     {
+        if (HtmlTempDocument.IsSameDocument(args.Url, _documentFileUri))
+            return;
+
         var decision = WebViewNavigationPolicy.Decide(args.Url);
         if (decision is WebViewNavigationDecision.Allow)
             return;

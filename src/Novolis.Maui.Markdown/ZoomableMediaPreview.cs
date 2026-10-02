@@ -74,6 +74,9 @@ public sealed class ZoomableMediaPreview : Grid
         ApplyChrome();
     }
 
+    /// <summary>Raised after <see cref="Hide"/> so a host can restore its document view.</summary>
+    public event EventHandler? Closed;
+
     /// <summary>Shows <paramref name="source"/> full screen.</summary>
     public void Show(ImageSource source, string caption)
     {
@@ -88,6 +91,7 @@ public sealed class ZoomableMediaPreview : Grid
     {
         IsVisible = false;
         _image.Source = null;
+        Closed?.Invoke(this, EventArgs.Empty);
     }
 
     private void ApplyChrome()

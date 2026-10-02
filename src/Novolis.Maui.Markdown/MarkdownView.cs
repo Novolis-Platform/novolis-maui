@@ -48,19 +48,20 @@ public sealed class MarkdownView : ContentView
 
     private readonly SecureHtmlWebView _web = new();
     private readonly ZoomableMediaPreview _preview = new();
-    private readonly Grid _root = new();
     private MarkdownHtmlActionSink _actions = new();
     private bool _refreshQueued;
     private string? _renderedHtml;
+    private int _refreshGeneration;
 
     /// <summary>Creates a Markdown viewer.</summary>
     public MarkdownView()
     {
+        HorizontalOptions = LayoutOptions.Fill;
+        VerticalOptions = LayoutOptions.Fill;
         _web.InnerView.AutomationId = "DocumentViewer";
         _web.HostNavigationRequested += OnHostNavigation;
-        _root.Add(_web);
-        _root.Add(_preview);
-        Content = _root;
+        _preview.Closed += (_, _) => Content = _web;
+        Content = _web;
     }
 
     /// <summary>Gets or sets Markdown source used when <see cref="Html"/> is not set.</summary>
@@ -123,10 +124,57 @@ public sealed class MarkdownView : ContentView
             return;
         }
 
-        var built = MarkdownHtml.Build(Markdown ?? string.Empty, Theme, Title, SourceDirectory);
-        _actions = built.Actions;
-        AssignHtml(built.Document);
+        var markdown = Markdown ?? string.Empty;
+        var theme = Theme;
+        var title = Title;
+        var directory = SourceDirectory;
+        var generation = Interlocked.Increment(ref _refreshGeneration);
+        AssignHtml(RenderingPlaceholder(title));
+        _ = Task.Run(() =>
+            {
+                var text = MarkdownHtml.Build(markdown, theme, title, directory, renderMermaid: false);
+                if (generation == _refreshGeneration)
+                {
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        if (generation != _refreshGeneration)
+                            return;
+                        _actions = text.Actions;
+                        AssignHtml(text.Document);
+                    });
+                }
+
+                return MarkdownHtml.Build(markdown, theme, title, directory, renderMermaid: true);
+            })
+            .ContinueWith(
+                task =>
+                {
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        if (generation != _refreshGeneration)
+                            return;
+                        if (task.IsFaulted)
+                        {
+                            var message = task.Exception?.GetBaseException().Message ?? "Unable to render Markdown.";
+                            AssignHtml(
+                                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Markdown</title></head>"
+                                + "<body><pre>" + System.Net.WebUtility.HtmlEncode(message) + "</pre></body></html>");
+                            return;
+                        }
+
+                        _actions = task.Result.Actions;
+                        AssignHtml(task.Result.Document);
+                    });
+                },
+                TaskScheduler.Default);
     }
+
+    private static string RenderingPlaceholder(string? title) =>
+        HtmlContentSecurityPolicy.Apply(
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>"
+            + System.Net.WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(title) ? "Markdown" : title)
+            + "</title></head><body style=\"margin:24px;font-family:Segoe UI,system-ui,sans-serif;"
+            + "color:#e8e8e8;background:#0d1117\"><p>Rendering…</p></body></html>");
 
     private void AssignHtml(string html)
     {
@@ -153,6 +201,7 @@ public sealed class MarkdownView : ContentView
             return;
         var asset = _actions.Previews[index];
         _preview.Show(MarkdownMediaSource.FromDataUri(asset.DataUri), asset.Caption);
+        Content = _preview;
     }
 
     private static void OnContentChanged(BindableObject bindable, object oldValue, object newValue)

@@ -25,6 +25,17 @@ public sealed class MarkdownHtmlTests
     }
 
     [Test]
+    public async Task FromMarkdown_CanSkipMermaidForFirstPaint()
+    {
+        var html = MarkdownHtml.FromMarkdown(
+            "```mermaid\nflowchart LR\n  A --> B\n```",
+            renderMermaid: false);
+
+        await Assert.That(html).Contains("language-mermaid");
+        await Assert.That(html).DoesNotContain("data:image/svg+xml;base64,");
+    }
+
+    [Test]
     public async Task FromMarkdown_AddsCodeBlockCopyControl()
     {
         var html = MarkdownHtml.FromMarkdown("```csharp\nvar answer = 42;\n```");
@@ -39,6 +50,22 @@ public sealed class MarkdownHtmlTests
     {
         var built = MarkdownHtml.Build("```text\nhello\n```");
         await Assert.That(built.Actions.CodeBlocks[0]).Contains("hello");
+    }
+
+    [Test]
+    public async Task Build_RendersPresenceLedgerSpecTextWithoutWaitingForMermaid()
+    {
+        const string path = @"C:\Users\frank\Downloads\Presence-Ledger-Spec.md";
+        if (!File.Exists(path))
+            return;
+
+        var markdown = await File.ReadAllTextAsync(path);
+        var built = MarkdownHtml.Build(markdown, title: "Presence-Ledger-Spec.md", renderMermaid: false);
+
+        await Assert.That(built.Document).Contains("<h1>Presence Ledger</h1>");
+        await Assert.That(built.Document).Contains("code-block-copy");
+        await Assert.That(built.Document).Contains("When did I arrive");
+        await Assert.That(built.Actions.CodeBlocks.Count).IsGreaterThanOrEqualTo(1);
     }
 
     [Test]
