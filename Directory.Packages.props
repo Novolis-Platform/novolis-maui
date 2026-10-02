@@ -12,6 +12,8 @@
     <PackageVersion Include="Novolis.Markup.Mermaid" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Markup.Mermaid.Rendering" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Maui.GraphicalProfile" Version="2026.1.*" />
+    <PackageVersion Include="Novolis.IO.Ndjson" Version="2026.1.*" />
+    <PackageVersion Include="Novolis.Maui.Ndjson" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Maui.Agent" Version="2026.1.*" />
     <PackageVersion Include="Novolis.Maui.Agent.Protocol" Version="2026.1.*" />
     <PackageVersion Include="TUnit" Version="1.72.4" />

@@ -24,7 +24,7 @@ public sealed class NdjsonSliceView : ContentView
     private readonly Picker _takePicker;
     private readonly VerticalStackLayout _records;
     private readonly Border _card;
-    private NdjsonSliceState _state = new(0, 100, null, false, null);
+    private ViewerState _state = new(0, 100, null, false, null);
     private INdjsonDocument? _document;
     private bool _themeSubscribed;
 
@@ -126,6 +126,7 @@ public sealed class NdjsonSliceView : ContentView
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Star),
+                new RowDefinition(GridLength.Star),
             },
             RowSpacing = 10,
         };
@@ -145,8 +146,6 @@ public sealed class NdjsonSliceView : ContentView
             Content = _records,
             VerticalScrollBarVisibility = ScrollBarVisibility.Always,
         }, 0, 4);
-        viewerLayout.RowDefinitions.Add(new RowDefinition(GridLength.Star));
-
         _card = CreateCard(viewerLayout);
         _card.Padding = new Thickness(0);
         Content = _card;
@@ -183,12 +182,12 @@ public sealed class NdjsonSliceView : ContentView
         SetBusy(true);
         try
         {
-            await LoadSliceAsync(cancellationToken).ConfigureAwait(false);
+            await LoadSliceAsync(cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             _state = _state with { Error = error };
-            await ReportErrorAsync("Unable to read NDJSON", error).ConfigureAwait(false);
+            await ReportErrorAsync("Unable to read NDJSON", error);
         }
         finally
         {
@@ -235,25 +234,25 @@ public sealed class NdjsonSliceView : ContentView
         if (_document is null)
             return;
 
-        _state = _state with { IsRefreshing = true, Error = null };
+        _state = ViewerNavigation.BeginRefresh(_state);
         SetBusy(true);
         try
         {
             if (RefreshDocumentAsync is { } refresh)
-                _document = await refresh(CancellationToken.None).ConfigureAwait(false) ?? _document;
+                _document = await refresh(CancellationToken.None) ?? _document;
             else
-                await _document.RefreshAsync().ConfigureAwait(false);
+                await _document.RefreshAsync();
 
-            await LoadSliceAsync(CancellationToken.None).ConfigureAwait(false);
+            await LoadSliceAsync(CancellationToken.None);
         }
         catch (Exception error)
         {
             _state = _state with { Error = error };
-            await ReportErrorAsync("Unable to refresh NDJSON", error).ConfigureAwait(false);
+            await ReportErrorAsync("Unable to refresh NDJSON", error);
         }
         finally
         {
-            _state = _state with { IsRefreshing = false };
+            _state = ViewerNavigation.CompleteRefresh(_state);
             SetBusy(false);
         }
     }
@@ -263,8 +262,8 @@ public sealed class NdjsonSliceView : ContentView
         if (_document is null)
             return;
 
-        _state = NdjsonSliceNavigation.Previous(_state);
-        await TryLoadSliceAsync().ConfigureAwait(false);
+        _state = ViewerNavigation.Previous(_state);
+        await TryLoadSliceAsync();
     }
 
     private async Task NextAsync()
@@ -272,8 +271,8 @@ public sealed class NdjsonSliceView : ContentView
         if (_document is null)
             return;
 
-        _state = NdjsonSliceNavigation.Next(_state);
-        await TryLoadSliceAsync().ConfigureAwait(false);
+        _state = ViewerNavigation.Next(_state);
+        await TryLoadSliceAsync();
     }
 
     private async Task JumpAsync()
@@ -283,12 +282,12 @@ public sealed class NdjsonSliceView : ContentView
         {
             await ReportErrorAsync(
                 "Jump to record",
-                new ArgumentException("Enter a non-negative record number.")).ConfigureAwait(false);
+                new ArgumentException("Enter a non-negative record number."));
             return;
         }
 
-        _state = NdjsonSliceNavigation.Jump(_state, skip);
-        await TryLoadSliceAsync().ConfigureAwait(false);
+        _state = ViewerNavigation.Jump(_state, skip);
+        await TryLoadSliceAsync();
     }
 
     private async Task ChangeTakeAsync()
@@ -296,8 +295,8 @@ public sealed class NdjsonSliceView : ContentView
         if (!int.TryParse(_takePicker.SelectedItem as string, NumberStyles.Integer, CultureInfo.InvariantCulture, out var take))
             return;
 
-        _state = NdjsonSliceNavigation.ChangeTake(_state, take);
-        await TryLoadSliceAsync().ConfigureAwait(false);
+        _state = ViewerNavigation.ChangeTake(_state, take);
+        await TryLoadSliceAsync();
     }
 
     private async Task LoadSliceAsync(CancellationToken cancellationToken)
@@ -309,7 +308,7 @@ public sealed class NdjsonSliceView : ContentView
         var slice = await document.ReadAsync(
             _state.Skip,
             _state.Take,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken);
         _state = _state with
         {
             Slice = slice,
@@ -324,12 +323,12 @@ public sealed class NdjsonSliceView : ContentView
         try
         {
             SetBusy(true);
-            await LoadSliceAsync(CancellationToken.None).ConfigureAwait(false);
+            await LoadSliceAsync(CancellationToken.None);
         }
         catch (Exception error)
         {
             _state = _state with { Error = error };
-            await ReportErrorAsync("Unable to read NDJSON", error).ConfigureAwait(false);
+            await ReportErrorAsync("Unable to read NDJSON", error);
         }
         finally
         {
@@ -371,7 +370,6 @@ public sealed class NdjsonSliceView : ContentView
     {
         var details = new Editor
         {
-            Text = record.Details,
             IsReadOnly = true,
             IsVisible = false,
             FontFamily = "Consolas",
@@ -380,15 +378,17 @@ public sealed class NdjsonSliceView : ContentView
             MaximumHeightRequest = 280,
         };
         Button? expand = null;
-        expand = CreateButton("Expand", $"NdjsonExpand{record.Number}", () =>
+        expand = CreateButton("Expand", $"NdjsonExpand{record.Number}", async () =>
         {
+            if (!details.IsVisible)
+                details.Text = await Task.Run(() => record.Details);
+
             details.IsVisible = !details.IsVisible;
             expand!.Text = details.IsVisible ? "Collapse" : "Expand";
-            return Task.CompletedTask;
         });
         var copy = CreateButton("Copy", $"NdjsonCopy{record.Number}", async () =>
         {
-            await Clipboard.Default.SetTextAsync(record.CopyText).ConfigureAwait(false);
+            await Clipboard.Default.SetTextAsync(record.CopyText);
         });
         expand.Padding = new Thickness(10, 5);
         copy.Padding = new Thickness(10, 5);
@@ -448,7 +448,7 @@ public sealed class NdjsonSliceView : ContentView
     private async Task ReportErrorAsync(string title, Exception error)
     {
         if (ErrorHandler is { } handler)
-            await handler(title, error).ConfigureAwait(false);
+            await handler(title, error);
     }
 
     private void SetBusy(bool isBusy)
@@ -498,7 +498,7 @@ public sealed class NdjsonSliceView : ContentView
             Padding = new Thickness(16, 9),
         };
         SemanticProperties.SetDescription(button, text);
-        button.Clicked += async (_, _) => await action().ConfigureAwait(false);
+        button.Clicked += async (_, _) => await action();
         return button;
     }
 
@@ -511,27 +511,4 @@ public sealed class NdjsonSliceView : ContentView
             Content = content,
         };
 
-    private sealed record NdjsonSliceState(
-        long Skip,
-        int Take,
-        NdjsonSlice? Slice,
-        bool IsRefreshing,
-        Exception? Error);
-
-    private static class NdjsonSliceNavigation
-    {
-        public static NdjsonSliceState Previous(NdjsonSliceState state) =>
-            state with { Skip = Math.Max(0, state.Skip - state.Take), Error = null };
-
-        public static NdjsonSliceState Next(NdjsonSliceState state) =>
-            state.Slice is not { HasMore: true }
-                ? state
-                : state with { Skip = checked(state.Skip + state.Take), Error = null };
-
-        public static NdjsonSliceState Jump(NdjsonSliceState state, long skip) =>
-            state with { Skip = skip, Error = null };
-
-        public static NdjsonSliceState ChangeTake(NdjsonSliceState state, int take) =>
-            state with { Take = take, Error = null };
-    }
 }

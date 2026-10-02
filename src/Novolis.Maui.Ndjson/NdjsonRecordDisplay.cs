@@ -19,7 +19,6 @@ public sealed class NdjsonRecordDisplay
         IsValid = record.IsValid;
         Status = IsValid ? "VALID" : "MALFORMED";
         Preview = CreatePreview(record);
-        Details = CreateDetails(record);
         CopyText = record.Json is { } json ? json.GetRawText() : record.Raw ?? string.Empty;
     }
 
@@ -42,17 +41,19 @@ public sealed class NdjsonRecordDisplay
     public string Preview { get; }
 
     /// <summary>Expanded formatted JSON or malformed raw line.</summary>
-    public string Details { get; }
+    public string Details => _details ??= CreateDetails(Record);
 
     /// <summary>Text copied to the system clipboard.</summary>
     public string CopyText { get; }
 
+    private string? _details;
+
     private static string CreatePreview(NdjsonRecord record)
     {
-        if (record.Json is { } json)
-            return json.GetRawText();
-
-        return record.Raw ?? string.Empty;
+        var text = record.Json is { } json
+            ? json.GetRawText()
+            : record.Raw ?? string.Empty;
+        return text.Length <= 4_096 ? text : $"{text[..4_096]}…";
     }
 
     private static string CreateDetails(NdjsonRecord record)
