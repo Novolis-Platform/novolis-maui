@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Updates</PackageId>
+    <RootNamespace>Novolis.Maui.Updates</RootNamespace>
+    <Description>MAUI update status, notification, and platform-handoff controls for direct-distribution apps.</Description>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+    <LibraryReference Include="Novolis.Registry.Updates" />
+    <LibraryReference Include="Novolis.Maui.GraphicalProfile" />
+  </ItemGroup>
+</Project>

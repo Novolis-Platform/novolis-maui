@@ -8,6 +8,7 @@
     <PackageReference Include="TUnit" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Novolis.Maui.Updates\Novolis.Maui.Updates.csproj" />
     <ProjectReference Include="../../src/Novolis.Maui.WebView/Novolis.Maui.WebView.csproj" />
     <ProjectReference Include="../../src/Novolis.Maui.Map/Novolis.Maui.Map.csproj" />
     <ProjectReference Include="../../src/Novolis.Maui.Mermaid/Novolis.Maui.Mermaid.csproj" />

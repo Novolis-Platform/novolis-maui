@@ -1,4 +1,5 @@
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Graphics.Platform;
 using Novolis.IO.Maps;
@@ -19,6 +20,7 @@ public sealed class MapView : GraphicsView, IDrawable
     readonly Dictionary<MapTileKey, GraphicsImage> _tiles = new();
     readonly Dictionary<MapTileKey, long> _tileLastUsed = new();
     readonly HashSet<MapTileKey> _staleTiles = new();
+    readonly List<GeoCoordinate> _drawingPoints = [];
     CancellationTokenSource? _tileRefreshCancellation;
     CancellationTokenSource? _refreshScheduleCancellation;
     Task? _refreshScheduleTask;
@@ -41,6 +43,7 @@ public sealed class MapView : GraphicsView, IDrawable
     double _panVelocityY;
     bool _panActive;
     bool _pinchActive;
+    GeoDrawingKind? _drawingKind;
 
     /// <summary>Creates a map view with a neutral initial viewport.</summary>
     public MapView()
@@ -129,12 +132,25 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
+            SelectedMarker = field?.FirstOrDefault(
+                marker => marker.Position == SelectedCoordinate);
             Invalidate();
         }
     }
 
     /// <summary>Circles rendered over the map.</summary>
     public IReadOnlyList<MapCircleOverlay>? Circles
+    {
+        get;
+        set
+        {
+            field = value;
+            Invalidate();
+        }
+    }
+
+    /// <summary>Polygons rendered over the map.</summary>
+    public IReadOnlyList<MapPolygonOverlay>? Polygons
     {
         get;
         set
@@ -155,6 +171,28 @@ public sealed class MapView : GraphicsView, IDrawable
         }
     }
 
+    /// <summary>Optional capabilities enabled by the host.</summary>
+    public MapInteractionOptions InteractionOptions { get; set; } =
+        MapInteractionOptions.Disabled;
+
+    /// <summary>Optional host-provided clipboard writer used by tests or product policy.</summary>
+    public Func<string, CancellationToken, Task>? ClipboardWriter { get; set; }
+
+    /// <summary>
+    /// Optional encoded-tile decoder. Hosts and tests can provide a decoder to
+    /// control native image creation and release policy.
+    /// </summary>
+    public Func<MapRasterTile, GraphicsImage?>? TileDecoder { get; set; }
+
+    /// <summary>Currently selected marker, if the selected coordinate came from one.</summary>
+    public MapMarker? SelectedMarker { get; private set; }
+
+    /// <summary>Whether a host-started drawing session is active.</summary>
+    public bool IsDrawing => _drawingKind is not null;
+
+    /// <summary>Vertices collected by the active drawing session.</summary>
+    public IReadOnlyList<GeoCoordinate> DrawingPoints => _drawingPoints;
+
     /// <summary>Selected geographic coordinate, if any.</summary>
     public GeoCoordinate? SelectedCoordinate
     {
@@ -162,7 +200,11 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
+            SelectedMarker = field is { } coordinate
+                ? Markers?.FirstOrDefault(marker => marker.Position == coordinate)
+                : null;
             Invalidate();
+            SelectionChanged?.Invoke();
         }
     }
 
@@ -212,11 +254,7 @@ public sealed class MapView : GraphicsView, IDrawable
     /// <summary>Whether one or more visible tiles came from a stale cache fallback.</summary>
     public bool HasStaleTiles =>
         HasValidSize()
-        && WebMercatorTiles.VisibleTiles(
-            Viewport.Center,
-            Viewport.Zoom,
-            Width,
-            Height).Any(_staleTiles.Contains);
+        && GetVisibleTileKeys().Any(_staleTiles.Contains);
 
     /// <summary>Raised when the user selects a geographic point.</summary>
     public event Action<GeoCoordinate>? PointSelected;
@@ -224,9 +262,141 @@ public sealed class MapView : GraphicsView, IDrawable
     /// <summary>Raised when the user selects a marker.</summary>
     public event Action<MapMarker>? MarkerSelected;
 
+    /// <summary>Raised when a drawing session is completed.</summary>
+    public event Action<GeoDrawing>? DrawingCompleted;
+
+    /// <summary>Raised when the selected marker or coordinate changes.</summary>
+    public event Action? SelectionChanged;
+
     /// <summary>Sets the camera center and zoom.</summary>
     public void SetViewport(GeoCoordinate center, double zoom) =>
         Viewport = new MapViewport(center, zoom);
+
+    /// <summary>Returns exactly the tile keys intersecting the current viewport.</summary>
+    public IReadOnlyList<MapTileKey> GetVisibleTileKeys() =>
+        HasValidSize()
+            ? WebMercatorTiles.VisibleTiles(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height)
+            : [];
+
+    /// <summary>Copies the selected coordinate using the configured host clipboard.</summary>
+    public Task<bool> CopySelectedCoordinateAsync(
+        CancellationToken cancellationToken = default) =>
+        CopySelectionAsync(
+            SelectedMarker is { } marker
+                ? GeoCoordinateText.Format(marker.Position)
+                : SelectedCoordinate is { } coordinate
+                    ? GeoCoordinateText.Format(coordinate)
+                    : null,
+            cancellationToken);
+
+    /// <summary>Copies the selected coordinate and marker identity as JSON.</summary>
+    public Task<bool> CopySelectedJsonAsync(
+        CancellationToken cancellationToken = default) =>
+        CopySelectionAsync(
+            SelectedCoordinate is not { } coordinate
+                ? null
+                : GeoCoordinateText.ToJson(
+                    coordinate,
+                    SelectedMarker?.Id,
+                    SelectedMarker?.Label,
+                    SelectedMarker?.Metadata),
+            cancellationToken);
+
+    /// <summary>Executes a host-mapped keyboard command.</summary>
+    public async Task<bool> ExecuteKeyboardCommandAsync(
+        MapKeyboardCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        switch (command)
+        {
+            case MapKeyboardCommand.CopyCoordinate:
+                return await CopySelectedCoordinateAsync(cancellationToken);
+            case MapKeyboardCommand.CopyJson:
+                return await CopySelectedJsonAsync(cancellationToken);
+            case MapKeyboardCommand.ZoomIn:
+                ZoomAt(Width / 2, Height / 2, Viewport.Zoom + 1);
+                return true;
+            case MapKeyboardCommand.ZoomOut:
+                ZoomAt(Width / 2, Height / 2, Viewport.Zoom - 1);
+                return true;
+            case MapKeyboardCommand.PanLeft:
+                PanBy(80, 0);
+                return true;
+            case MapKeyboardCommand.PanRight:
+                PanBy(-80, 0);
+                return true;
+            case MapKeyboardCommand.PanUp:
+                PanBy(0, 80);
+                return true;
+            case MapKeyboardCommand.PanDown:
+                PanBy(0, -80);
+                return true;
+            case MapKeyboardCommand.CompleteDrawing:
+                return CompleteDrawing() is not null;
+            case MapKeyboardCommand.CancelDrawing:
+                CancelDrawing();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Starts a host-enabled geographic drawing session.</summary>
+    public bool BeginDrawing(GeoDrawingKind kind)
+    {
+        if (!InteractionOptions.EnableDrawing)
+            return false;
+
+        _drawingKind = kind;
+        _drawingPoints.Clear();
+        Invalidate();
+        return true;
+    }
+
+    /// <summary>Adds a vertex to the active drawing session.</summary>
+    public bool AddDrawingPoint(GeoCoordinate coordinate)
+    {
+        if (_drawingKind is not { } kind)
+            return false;
+
+        _drawingPoints.Add(coordinate);
+        Invalidate();
+        if (kind == GeoDrawingKind.Point)
+            CompleteDrawing();
+        return true;
+    }
+
+    /// <summary>Completes the active drawing and raises <see cref="DrawingCompleted"/>.</summary>
+    public GeoDrawing? CompleteDrawing()
+    {
+        if (_drawingKind is not { } kind
+            || !HasEnoughDrawingPoints(kind, _drawingPoints.Count))
+        {
+            return null;
+        }
+
+        var drawing = new GeoDrawing(kind, _drawingPoints);
+        _drawingKind = null;
+        _drawingPoints.Clear();
+        Invalidate();
+        DrawingCompleted?.Invoke(drawing);
+        return drawing;
+    }
+
+    /// <summary>Cancels the active drawing without raising completion.</summary>
+    public void CancelDrawing()
+    {
+        if (_drawingKind is null)
+            return;
+
+        _drawingKind = null;
+        _drawingPoints.Clear();
+        Invalidate();
+    }
 
     /// <summary>Zooms around a screen point while retaining its geographic anchor.</summary>
     public void ZoomAt(double screenX, double screenY, double zoom)
@@ -318,9 +488,12 @@ public sealed class MapView : GraphicsView, IDrawable
         DrawGrid(canvas);
         DrawTiles(canvas);
         DrawCircles(canvas);
+        DrawPolygons(canvas);
         DrawTracks(canvas);
         DrawMarkers(canvas);
         DrawSelectedCoordinate(canvas);
+        DrawDrawingPreview(canvas);
+        DrawDrawingStatus(canvas);
         DrawStatus(canvas);
         DrawAttribution(canvas);
     }
@@ -340,11 +513,7 @@ public sealed class MapView : GraphicsView, IDrawable
 
     void DrawTiles(ICanvas canvas)
     {
-        var visibleKeys = WebMercatorTiles.VisibleTiles(
-            Viewport.Center,
-            Viewport.Zoom,
-            Width,
-            Height);
+        var visibleKeys = GetVisibleTileKeys();
         var drawn = new HashSet<MapTileKey>();
 
         foreach (var key in visibleKeys)
@@ -462,6 +631,159 @@ public sealed class MapView : GraphicsView, IDrawable
         }
     }
 
+    void DrawPolygons(ICanvas canvas)
+    {
+        if (Polygons is not { Count: > 0 })
+            return;
+
+        foreach (var polygon in Polygons)
+        {
+            if (polygon.Points.Count < 2)
+                continue;
+
+            if (polygon.Fill is { } fill && polygon.Points.Count >= 3)
+            {
+                var path = new PathF();
+                var first = WebMercatorTiles.GeoToPixel(
+                    Viewport.Center,
+                    Viewport.Zoom,
+                    Width,
+                    Height,
+                    polygon.Points[0]);
+                path.MoveTo((float)first.X, (float)first.Y);
+                for (var index = 1; index < polygon.Points.Count; index++)
+                {
+                    var point = WebMercatorTiles.GeoToPixel(
+                        Viewport.Center,
+                        Viewport.Zoom,
+                        Width,
+                        Height,
+                        polygon.Points[index]);
+                    path.LineTo((float)point.X, (float)point.Y);
+                }
+
+                path.Close();
+                canvas.FillColor = fill;
+                canvas.FillPath(path);
+            }
+
+            canvas.StrokeColor = Colors.DarkSlateBlue;
+            canvas.StrokeSize = 2;
+            for (var index = 1; index < polygon.Points.Count; index++)
+            {
+                var first = WebMercatorTiles.GeoToPixel(
+                    Viewport.Center,
+                    Viewport.Zoom,
+                    Width,
+                    Height,
+                    polygon.Points[index - 1]);
+                var second = WebMercatorTiles.GeoToPixel(
+                    Viewport.Center,
+                    Viewport.Zoom,
+                    Width,
+                    Height,
+                    polygon.Points[index]);
+                canvas.DrawLine(
+                    (float)first.X,
+                    (float)first.Y,
+                    (float)second.X,
+                    (float)second.Y);
+            }
+
+            if (polygon.Points[0] != polygon.Points[^1])
+            {
+                var first = WebMercatorTiles.GeoToPixel(
+                    Viewport.Center,
+                    Viewport.Zoom,
+                    Width,
+                    Height,
+                    polygon.Points[^1]);
+                var second = WebMercatorTiles.GeoToPixel(
+                    Viewport.Center,
+                    Viewport.Zoom,
+                    Width,
+                    Height,
+                    polygon.Points[0]);
+                canvas.DrawLine(
+                    (float)first.X,
+                    (float)first.Y,
+                    (float)second.X,
+                    (float)second.Y);
+            }
+        }
+    }
+
+    void DrawDrawingPreview(ICanvas canvas)
+    {
+        if (_drawingKind is not { } kind || _drawingPoints.Count == 0)
+            return;
+
+        canvas.StrokeColor = Colors.DarkOrange;
+        canvas.StrokeSize = 3;
+        if (kind == GeoDrawingKind.Circle && _drawingPoints.Count >= 2)
+        {
+            var center = WebMercatorTiles.GeoToPixel(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                _drawingPoints[0]);
+            var edge = WebMercatorTiles.GeoToPixel(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                _drawingPoints[1]);
+            var radius = global::System.Math.Sqrt(
+                global::System.Math.Pow(edge.X - center.X, 2)
+                + global::System.Math.Pow(edge.Y - center.Y, 2));
+            canvas.DrawCircle((float)center.X, (float)center.Y, (float)radius);
+            return;
+        }
+
+        for (var index = 1; index < _drawingPoints.Count; index++)
+        {
+            var first = WebMercatorTiles.GeoToPixel(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                _drawingPoints[index - 1]);
+            var second = WebMercatorTiles.GeoToPixel(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                _drawingPoints[index]);
+            canvas.DrawLine(
+                (float)first.X,
+                (float)first.Y,
+                (float)second.X,
+                (float)second.Y);
+        }
+
+        if (kind == GeoDrawingKind.Polygon && _drawingPoints.Count >= 3)
+        {
+            var first = WebMercatorTiles.GeoToPixel(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                _drawingPoints[^1]);
+            var second = WebMercatorTiles.GeoToPixel(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                _drawingPoints[0]);
+            canvas.DrawLine(
+                (float)first.X,
+                (float)first.Y,
+                (float)second.X,
+                (float)second.Y);
+        }
+    }
+
     void DrawMarkers(ICanvas canvas)
     {
         if (Markers is not { Count: > 0 })
@@ -554,6 +876,35 @@ public sealed class MapView : GraphicsView, IDrawable
             VerticalAlignment.Center);
     }
 
+    void DrawDrawingStatus(ICanvas canvas)
+    {
+        if (!InteractionOptions.ShowMeasurementResults
+            || _drawingKind is not { } kind)
+        {
+            return;
+        }
+
+        var text = GeoMeasurementText.ForDrawing(kind, _drawingPoints);
+        var width = (float)global::System.Math.Min(
+            global::System.Math.Max(220, Width - 20),
+            460);
+        var y = (float)global::System.Math.Max(
+            48,
+            Height - (string.IsNullOrWhiteSpace(Attribution) ? 48 : 78));
+        canvas.FillColor = Colors.White.WithAlpha(0.9f);
+        canvas.FillRectangle(10, y, width, 34);
+        canvas.FontColor = Colors.DarkSlateGray;
+        canvas.FontSize = 12;
+        canvas.DrawString(
+            text,
+            18,
+            y + 7,
+            width - 16,
+            20,
+            HorizontalAlignment.Left,
+            VerticalAlignment.Center);
+    }
+
     void DrawAttribution(ICanvas canvas)
     {
         var attribution = string.IsNullOrWhiteSpace(Attribution)
@@ -581,6 +932,9 @@ public sealed class MapView : GraphicsView, IDrawable
 
     void OnPanUpdated(object? sender, PanUpdatedEventArgs args)
     {
+        if (IsDrawing)
+            return;
+
         switch (args.StatusType)
         {
             case GestureStatus.Started:
@@ -694,10 +1048,24 @@ public sealed class MapView : GraphicsView, IDrawable
             return;
 
         var point = position.Value;
+        if (IsDrawing)
+        {
+            AddDrawingPoint(
+                WebMercatorTiles.PixelToGeo(
+                    Viewport.Center,
+                    Viewport.Zoom,
+                    Width,
+                    Height,
+                    point.X,
+                    point.Y));
+            return;
+        }
+
         var marker = HitTestMarker(point.X, point.Y);
         if (marker is not null)
         {
             SelectedCoordinate = marker.Position;
+            SelectedMarker = marker;
             MarkerSelected?.Invoke(marker);
             PointSelected?.Invoke(marker.Position);
             return;
@@ -711,6 +1079,7 @@ public sealed class MapView : GraphicsView, IDrawable
             point.X,
             point.Y);
         SelectedCoordinate = selected;
+        SelectedMarker = null;
         PointSelected?.Invoke(selected);
     }
 
@@ -740,6 +1109,34 @@ public sealed class MapView : GraphicsView, IDrawable
 
         return null;
     }
+
+    async Task<bool> CopySelectionAsync(
+        string? text,
+        CancellationToken cancellationToken)
+    {
+        if (text is null)
+            return false;
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (ClipboardWriter is not null)
+        {
+            await ClipboardWriter(text, cancellationToken);
+            return true;
+        }
+
+        await Clipboard.Default.SetTextAsync(text);
+        return true;
+    }
+
+    static bool HasEnoughDrawingPoints(GeoDrawingKind kind, int count) =>
+        kind switch
+        {
+            GeoDrawingKind.Point => count >= 1,
+            GeoDrawingKind.Circle => count >= 2,
+            GeoDrawingKind.Polyline => count >= 2,
+            GeoDrawingKind.Polygon => count >= 3,
+            _ => false,
+        };
 
     async Task RunInertiaAsync(double velocityX, double velocityY)
     {
@@ -867,7 +1264,8 @@ public sealed class MapView : GraphicsView, IDrawable
         schedule?.Cancel();
     }
 
-    async Task RefreshTilesAsync(CancellationToken cancellationToken = default)
+    /// <summary>Loads the exact tile set visible in the current viewport.</summary>
+    public async Task RefreshTilesAsync(CancellationToken cancellationToken = default)
     {
         var source = TileSource;
         if (source is null || !TileLoadingEnabled || !HasValidSize())
@@ -887,11 +1285,7 @@ public sealed class MapView : GraphicsView, IDrawable
 
         try
         {
-            var keys = WebMercatorTiles.VisibleTiles(
-                Viewport.Center,
-                Viewport.Zoom,
-                Width,
-                Height);
+            var keys = GetVisibleTileKeys();
             var candidates = keys
                 .Where(key => !_tiles.ContainsKey(key) || _staleTiles.Contains(key))
                 .OrderBy(key => TileDistanceFromViewportCenter(key))
@@ -972,7 +1366,7 @@ public sealed class MapView : GraphicsView, IDrawable
             if (tile is null)
                 return new DecodedTile(key, null, false, true);
 
-            var image = Decode(tile);
+            var image = TileDecoder?.Invoke(tile) ?? Decode(tile);
             return new DecodedTile(
                 key,
                 image,

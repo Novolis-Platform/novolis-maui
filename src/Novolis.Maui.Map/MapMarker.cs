@@ -7,4 +7,6 @@ public sealed record MapMarker(
     string Id,
     GeoCoordinate Position,
     string? Label = null,
-    double RadiusPixels = 6);
+    double RadiusPixels = 6,
+    IReadOnlyDictionary<string, string>? Metadata = null,
+    object? Tag = null);
