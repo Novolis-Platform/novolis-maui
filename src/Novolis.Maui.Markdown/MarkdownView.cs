@@ -105,6 +105,17 @@ public sealed class MarkdownView : ContentView
     /// <summary>Refreshes the preview from the current content.</summary>
     public void Refresh() => QueueRefresh();
 
+    /// <summary>Opens a recorded mermaid or image preview if <paramref name="index"/> exists.</summary>
+    public bool TryOpenPreview(int index)
+    {
+        if ((uint)index >= (uint)_actions.Previews.Count)
+            return false;
+        var asset = _actions.Previews[index];
+        _preview.Show(asset.DataUri, asset.Caption);
+        Content = _preview;
+        return true;
+    }
+
     private void QueueRefresh()
     {
         if (_refreshQueued)
