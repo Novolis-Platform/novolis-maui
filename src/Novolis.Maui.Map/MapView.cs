@@ -109,7 +109,7 @@ public sealed class MapView : GraphicsView, IDrawable
                 return;
 
             field = value;
-            Invalidate();
+            InvalidateMap();
             QueueTileRefresh();
         }
     } = new(new GeoCoordinate(0, 0), 2);
@@ -128,7 +128,7 @@ public sealed class MapView : GraphicsView, IDrawable
             _tileRefreshCancellation?.Cancel();
             ClearTiles();
             QueueTileRefresh(immediate: true);
-            Invalidate();
+            InvalidateMap();
         }
     }
 
@@ -141,7 +141,7 @@ public sealed class MapView : GraphicsView, IDrawable
             field = value;
             SelectedMarker = field?.FirstOrDefault(
                 marker => marker.Position == SelectedCoordinate);
-            Invalidate();
+            InvalidateMap();
         }
     }
 
@@ -152,7 +152,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
-            Invalidate();
+            InvalidateMap();
         }
     }
 
@@ -163,7 +163,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
-            Invalidate();
+            InvalidateMap();
         }
     }
 
@@ -174,7 +174,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
-            Invalidate();
+            InvalidateMap();
         }
     }
 
@@ -214,7 +214,7 @@ public sealed class MapView : GraphicsView, IDrawable
             SelectedMarker = field is { } coordinate
                 ? Markers?.FirstOrDefault(marker => marker.Position == coordinate)
                 : null;
-            Invalidate();
+            InvalidateMap();
             if (changed && !_suppressSelectionChanged)
                 SelectionChanged?.Invoke();
         }
@@ -241,7 +241,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
-            Invalidate();
+            InvalidateMap();
         }
     }
 
@@ -266,7 +266,7 @@ public sealed class MapView : GraphicsView, IDrawable
                 StopRefreshSchedule();
                 _tileRefreshCancellation?.Cancel();
                 IsLoading = false;
-                Invalidate();
+                InvalidateMap();
                 return;
             }
 
@@ -402,7 +402,7 @@ public sealed class MapView : GraphicsView, IDrawable
 
         _drawingKind = kind;
         _drawingPoints.Clear();
-        Invalidate();
+        InvalidateMap();
         return true;
     }
 
@@ -423,7 +423,7 @@ public sealed class MapView : GraphicsView, IDrawable
         {
             _drawingPoints.Add(coordinate);
         }
-        Invalidate();
+        InvalidateMap();
         if (kind == GeoDrawingKind.Point)
             CompleteDrawing();
         return true;
@@ -441,7 +441,7 @@ public sealed class MapView : GraphicsView, IDrawable
         var drawing = new GeoDrawing(kind, _drawingPoints);
         _drawingKind = null;
         _drawingPoints.Clear();
-        Invalidate();
+        InvalidateMap();
         DrawingCompleted?.Invoke(drawing);
         return drawing;
     }
@@ -454,7 +454,7 @@ public sealed class MapView : GraphicsView, IDrawable
 
         _drawingKind = null;
         _drawingPoints.Clear();
-        Invalidate();
+        InvalidateMap();
     }
 
     /// <summary>Zooms around a screen point while retaining its geographic anchor.</summary>
@@ -522,7 +522,7 @@ public sealed class MapView : GraphicsView, IDrawable
     public void RetryTiles()
     {
         ErrorMessage = null;
-        Invalidate();
+        InvalidateMap();
         QueueTileRefresh(immediate: true);
     }
 
@@ -533,7 +533,7 @@ public sealed class MapView : GraphicsView, IDrawable
         _tileRefreshCancellation?.Cancel();
         ErrorMessage = null;
         DisposeTiles();
-        Invalidate();
+        InvalidateMap();
     }
 
     /// <inheritdoc />
@@ -859,7 +859,8 @@ public sealed class MapView : GraphicsView, IDrawable
                 ? global::System.Math.Max(2, marker.RadiusPixels)
                 : 6;
             var selected = SelectedCoordinate == marker.Position;
-            canvas.FillColor = selected ? Colors.DarkOrange : Colors.DarkCyan;
+            canvas.FillColor = marker.Ink
+                ?? (selected ? Colors.DarkOrange : Colors.DarkCyan);
             canvas.FillCircle((float)screen.X, (float)screen.Y, (float)radius);
 
             if (string.IsNullOrWhiteSpace(marker.Label))
@@ -1379,7 +1380,7 @@ public sealed class MapView : GraphicsView, IDrawable
         var token = cancellation.Token;
         IsLoading = true;
         ErrorMessage = null;
-        Invalidate();
+        InvalidateMap();
 
         try
         {
@@ -1416,7 +1417,7 @@ public sealed class MapView : GraphicsView, IDrawable
 
                 ReplaceTile(result.Key, result.Image, result.IsStale);
                 TrimTiles(keys);
-                Invalidate();
+                InvalidateMap();
             }
 
             if (!acceptResults)
@@ -1430,7 +1431,7 @@ public sealed class MapView : GraphicsView, IDrawable
                     ? $"{failed} map tile{(failed == 1 ? string.Empty : "s")} unavailable. Retry."
                     : "Map tiles are unavailable. Check the connection and retry.";
             }
-            Invalidate();
+            InvalidateMap();
         }
         catch (OperationCanceledException) when (
             cancellation.IsCancellationRequested
@@ -1448,7 +1449,7 @@ public sealed class MapView : GraphicsView, IDrawable
             {
                 _tileRefreshCancellation = null;
                 IsLoading = false;
-                Invalidate();
+                InvalidateMap();
             }
         }
     }
