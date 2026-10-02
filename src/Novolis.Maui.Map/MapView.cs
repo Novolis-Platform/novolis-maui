@@ -13,9 +13,22 @@ namespace Novolis.Maui.Map;
 /// </summary>
 public sealed class MapView : GraphicsView, IDrawable
 {
+    const int MaximumCachedTiles = 128;
+    static readonly TimeSpan TileRefreshDebounce = TimeSpan.FromMilliseconds(90);
+
     readonly Dictionary<MapTileKey, GraphicsImage> _tiles = new();
+    readonly Dictionary<MapTileKey, long> _tileLastUsed = new();
+    readonly HashSet<MapTileKey> _staleTiles = new();
     CancellationTokenSource? _tileRefreshCancellation;
+    CancellationTokenSource? _refreshScheduleCancellation;
+    Task? _refreshScheduleTask;
     CancellationTokenSource? _inertiaCancellation;
+    long _tileRefreshGeneration;
+    long _refreshRevision;
+    long _tileUseCounter;
+    bool _refreshImmediateRequested;
+    bool _tileLoadingEnabled = true;
+    int _interactionDepth;
     MapViewport _panStartViewport;
     MapViewport _pinchStartViewport;
     GeoCoordinate _pinchAnchor;
@@ -27,6 +40,7 @@ public sealed class MapView : GraphicsView, IDrawable
     double _panVelocityX;
     double _panVelocityY;
     bool _panActive;
+    bool _pinchActive;
 
     /// <summary>Creates a map view with a neutral initial viewport.</summary>
     public MapView()
@@ -35,6 +49,11 @@ public sealed class MapView : GraphicsView, IDrawable
         BackgroundColor = Colors.LightGray;
         HorizontalOptions = LayoutOptions.Fill;
         VerticalOptions = LayoutOptions.Fill;
+        AutomationId = "MapView";
+        SemanticProperties.SetDescription(
+            this,
+            "Interactive map. Pan to move, pinch to zoom, and tap to select a location.");
+        SemanticProperties.SetHint(this, "Map");
 
         var pan = new PanGestureRecognizer();
         pan.PanUpdated += OnPanUpdated;
@@ -51,12 +70,34 @@ public sealed class MapView : GraphicsView, IDrawable
         SizeChanged += (_, _) => QueueTileRefresh();
     }
 
+    /// <inheritdoc />
+    protected override void OnHandlerChanged()
+    {
+        if (Handler is null)
+        {
+            StopRefreshSchedule();
+            _tileRefreshCancellation?.Cancel();
+            CancelInertia();
+            ClearTiles();
+            IsLoading = false;
+        }
+        else
+        {
+            QueueTileRefresh(immediate: true);
+        }
+
+        base.OnHandlerChanged();
+    }
+
     /// <summary>Camera state.</summary>
     public MapViewport Viewport
     {
         get;
         set
         {
+            if (field == value)
+                return;
+
             field = value;
             Invalidate();
             QueueTileRefresh();
@@ -73,8 +114,10 @@ public sealed class MapView : GraphicsView, IDrawable
                 return;
 
             field = value;
+            Interlocked.Increment(ref _tileRefreshGeneration);
+            _tileRefreshCancellation?.Cancel();
             ClearTiles();
-            QueueTileRefresh();
+            QueueTileRefresh(immediate: true);
             Invalidate();
         }
     }
@@ -137,8 +180,43 @@ public sealed class MapView : GraphicsView, IDrawable
     /// <summary>Whether visible tiles are currently loading.</summary>
     public bool IsLoading { get; private set; }
 
+    /// <summary>
+    /// Gets or sets whether this view may fetch tiles. Existing tiles remain
+    /// visible while loading is disabled.
+    /// </summary>
+    public bool TileLoadingEnabled
+    {
+        get => _tileLoadingEnabled;
+        set
+        {
+            if (_tileLoadingEnabled == value)
+                return;
+
+            _tileLoadingEnabled = value;
+            if (!value)
+            {
+                StopRefreshSchedule();
+                _tileRefreshCancellation?.Cancel();
+                IsLoading = false;
+                Invalidate();
+                return;
+            }
+
+            QueueTileRefresh(immediate: true);
+        }
+    }
+
     /// <summary>Recoverable provider error displayed over the map.</summary>
     public string? ErrorMessage { get; private set; }
+
+    /// <summary>Whether one or more visible tiles came from a stale cache fallback.</summary>
+    public bool HasStaleTiles =>
+        HasValidSize()
+        && WebMercatorTiles.VisibleTiles(
+            Viewport.Center,
+            Viewport.Zoom,
+            Width,
+            Height).Any(_staleTiles.Contains);
 
     /// <summary>Raised when the user selects a geographic point.</summary>
     public event Action<GeoCoordinate>? PointSelected;
@@ -150,12 +228,91 @@ public sealed class MapView : GraphicsView, IDrawable
     public void SetViewport(GeoCoordinate center, double zoom) =>
         Viewport = new MapViewport(center, zoom);
 
+    /// <summary>Zooms around a screen point while retaining its geographic anchor.</summary>
+    public void ZoomAt(double screenX, double screenY, double zoom)
+    {
+        if (!HasValidSize())
+            return;
+
+        var clampedZoom = global::System.Math.Clamp(
+            zoom,
+            MapViewport.MinimumZoom,
+            MapViewport.MaximumZoom);
+        var anchor = WebMercatorTiles.PixelToGeo(
+            Viewport.Center,
+            Viewport.Zoom,
+            Width,
+            Height,
+            screenX,
+            screenY);
+        var center = WebMercatorTiles.CenterForAnchor(
+            clampedZoom,
+            Width,
+            Height,
+            anchor,
+            screenX,
+            screenY);
+        Viewport = new MapViewport(center, clampedZoom);
+    }
+
+    /// <summary>Translates the viewport by a screen-pixel delta.</summary>
+    public void PanBy(double deltaX, double deltaY)
+    {
+        if (!HasValidSize())
+            return;
+
+        var center = WebMercatorTiles.PixelToGeo(
+            Viewport.Center,
+            Viewport.Zoom,
+            Width,
+            Height,
+            Width / 2 - deltaX,
+            Height / 2 - deltaY);
+        Viewport = new MapViewport(center, Viewport.Zoom);
+    }
+
+    /// <summary>Defers network refreshes while a continuous camera gesture is active.</summary>
+    public void BeginCameraInteraction()
+    {
+        Interlocked.Increment(ref _interactionDepth);
+        CancelInertia();
+    }
+
+    /// <summary>Ends a continuous camera gesture and refreshes the final viewport.</summary>
+    public void EndCameraInteraction()
+    {
+        var depth = Interlocked.Decrement(ref _interactionDepth);
+        if (depth > 0)
+            return;
+
+        Interlocked.Exchange(ref _interactionDepth, 0);
+        QueueTileRefresh(immediate: true);
+    }
+
+    /// <summary>Requests an immediate tile refresh after a provider or network failure.</summary>
+    public void RetryTiles()
+    {
+        ErrorMessage = null;
+        Invalidate();
+        QueueTileRefresh(immediate: true);
+    }
+
+    /// <summary>Releases decoded tile images currently held by this view.</summary>
+    public void ClearTiles()
+    {
+        Interlocked.Increment(ref _tileRefreshGeneration);
+        _tileRefreshCancellation?.Cancel();
+        ErrorMessage = null;
+        DisposeTiles();
+        Invalidate();
+    }
+
     /// <inheritdoc />
     public void Draw(ICanvas canvas, RectF dirtyRect)
     {
         canvas.FillColor = Colors.LightGray;
         canvas.FillRectangle(dirtyRect);
-        if (Width <= 0 || Height <= 0)
+        if (!HasValidSize())
             return;
 
         DrawGrid(canvas);
@@ -183,28 +340,61 @@ public sealed class MapView : GraphicsView, IDrawable
 
     void DrawTiles(ICanvas canvas)
     {
-        foreach (var key in WebMercatorTiles.VisibleTiles(
-                     Viewport.Center,
-                     Viewport.Zoom,
-                     Width,
-                     Height))
+        var visibleKeys = WebMercatorTiles.VisibleTiles(
+            Viewport.Center,
+            Viewport.Zoom,
+            Width,
+            Height);
+        var drawn = new HashSet<MapTileKey>();
+
+        foreach (var key in visibleKeys)
         {
-            var rectangle = WebMercatorTiles.TilePixelRect(
-                Viewport.Center,
-                Viewport.Zoom,
-                Width,
-                Height,
-                key);
-            if (!_tiles.TryGetValue(key, out var image))
+            if (_tiles.ContainsKey(key))
                 continue;
 
-            canvas.DrawImage(
-                image,
-                (float)rectangle.X,
-                (float)rectangle.Y,
-                (float)rectangle.Width,
-                (float)rectangle.Height);
+            for (var zoom = key.Zoom - 1; zoom >= 0; zoom--)
+            {
+                var scale = 1 << (key.Zoom - zoom);
+                var parent = new MapTileKey(
+                    zoom,
+                    key.X / scale,
+                    key.Y / scale);
+                if (_tiles.ContainsKey(parent))
+                {
+                    if (drawn.Add(parent))
+                        DrawTile(canvas, parent);
+                    break;
+                }
+            }
         }
+
+        foreach (var key in visibleKeys)
+        {
+            if (!_tiles.ContainsKey(key))
+                continue;
+
+            DrawTile(canvas, key);
+        }
+    }
+
+    void DrawTile(ICanvas canvas, MapTileKey key)
+    {
+        if (!_tiles.TryGetValue(key, out var image))
+            return;
+
+        var rectangle = WebMercatorTiles.TilePixelRect(
+            Viewport.Center,
+            Viewport.Zoom,
+            Width,
+            Height,
+            key);
+        _tileLastUsed[key] = ++_tileUseCounter;
+        canvas.DrawImage(
+            image,
+            (float)rectangle.X,
+            (float)rectangle.Y,
+            (float)rectangle.Width,
+            (float)rectangle.Height);
     }
 
     void DrawCircles(ICanvas canvas)
@@ -339,19 +529,26 @@ public sealed class MapView : GraphicsView, IDrawable
 
     void DrawStatus(ICanvas canvas)
     {
-        if (!IsLoading && string.IsNullOrWhiteSpace(ErrorMessage))
+        if (!IsLoading
+            && string.IsNullOrWhiteSpace(ErrorMessage)
+            && !HasStaleTiles)
             return;
 
-        var text = IsLoading ? "Loading map…" : ErrorMessage!;
+        var text = IsLoading
+            ? "Loading map…"
+            : ErrorMessage ?? "Using cached map tiles";
+        var width = (float)global::System.Math.Min(
+            global::System.Math.Max(220, Width - 20),
+            420);
         canvas.FillColor = Colors.White.WithAlpha(0.86f);
-        canvas.FillRectangle(10, 10, 220, 30);
+        canvas.FillRectangle(10, 10, width, 34);
         canvas.FontColor = Colors.DarkSlateGray;
         canvas.FontSize = 12;
         canvas.DrawString(
             text,
             18,
             15,
-            204,
+            width - 16,
             20,
             HorizontalAlignment.Left,
             VerticalAlignment.Center);
@@ -365,15 +562,18 @@ public sealed class MapView : GraphicsView, IDrawable
         if (string.IsNullOrWhiteSpace(attribution))
             return;
 
+        var width = (float)global::System.Math.Min(
+            global::System.Math.Max(160, Width),
+            480);
         canvas.FillColor = Colors.White.WithAlpha(0.86f);
-        canvas.FillRectangle(0, (float)(Height - 26), 260, 26);
+        canvas.FillRectangle(0, (float)(Height - 30), width, 30);
         canvas.FontColor = Colors.DarkSlateGray;
         canvas.FontSize = 10;
         canvas.DrawString(
             attribution,
             5,
-            (float)(Height - 23),
-            250,
+            (float)(Height - 27),
+            width - 10,
             20,
             HorizontalAlignment.Left,
             VerticalAlignment.Center);
@@ -384,7 +584,7 @@ public sealed class MapView : GraphicsView, IDrawable
         switch (args.StatusType)
         {
             case GestureStatus.Started:
-                CancelInertia();
+                BeginCameraInteraction();
                 _panStartViewport = Viewport;
                 _panLastX = 0;
                 _panLastY = 0;
@@ -394,7 +594,7 @@ public sealed class MapView : GraphicsView, IDrawable
                 _panActive = true;
                 break;
             case GestureStatus.Running:
-                if (!_panActive || Width <= 0 || Height <= 0)
+                if (!_panActive || !HasValidSize())
                     return;
 
                 var now = DateTimeOffset.UtcNow;
@@ -421,7 +621,11 @@ public sealed class MapView : GraphicsView, IDrawable
                 break;
             case GestureStatus.Completed:
             case GestureStatus.Canceled:
-                _panActive = false;
+                if (_panActive)
+                {
+                    _panActive = false;
+                    EndCameraInteraction();
+                }
                 if (global::System.Math.Sqrt(
                         _panVelocityX * _panVelocityX
                         + _panVelocityY * _panVelocityY) >= 140)
@@ -437,10 +641,11 @@ public sealed class MapView : GraphicsView, IDrawable
         switch (args.Status)
         {
             case GestureStatus.Started:
-                CancelInertia();
-                if (Width <= 0 || Height <= 0)
+                if (!HasValidSize())
                     return;
 
+                BeginCameraInteraction();
+                _pinchActive = true;
                 _pinchStartViewport = Viewport;
                 _pinchScreenX = args.ScaleOrigin.X * Width;
                 _pinchScreenY = args.ScaleOrigin.Y * Height;
@@ -453,7 +658,7 @@ public sealed class MapView : GraphicsView, IDrawable
                     _pinchScreenY);
                 break;
             case GestureStatus.Running:
-                if (Width <= 0 || Height <= 0)
+                if (!HasValidSize())
                     return;
 
                 var scale = global::System.Math.Max(0.01, args.Scale);
@@ -471,13 +676,21 @@ public sealed class MapView : GraphicsView, IDrawable
                     _pinchScreenY);
                 Viewport = new MapViewport(center, zoom);
                 break;
+            case GestureStatus.Completed:
+            case GestureStatus.Canceled:
+                if (_pinchActive)
+                {
+                    _pinchActive = false;
+                    EndCameraInteraction();
+                }
+                break;
         }
     }
 
     void OnTapped(object? sender, TappedEventArgs args)
     {
         var position = args.GetPosition(this);
-        if (position is null || Width <= 0 || Height <= 0)
+        if (position is null || !HasValidSize())
             return;
 
         var point = position.Value;
@@ -531,6 +744,7 @@ public sealed class MapView : GraphicsView, IDrawable
     async Task RunInertiaAsync(double velocityX, double velocityY)
     {
         CancelInertia();
+        BeginCameraInteraction();
         using var cancellation = new CancellationTokenSource();
         _inertiaCancellation = cancellation;
         try
@@ -539,7 +753,7 @@ public sealed class MapView : GraphicsView, IDrawable
                        velocityX * velocityX + velocityY * velocityY) >= 24)
             {
                 await Task.Delay(16, cancellation.Token);
-                if (Width <= 0 || Height <= 0)
+                if (!HasValidSize())
                     break;
 
                 var deltaX = velocityX * 0.016;
@@ -563,26 +777,109 @@ public sealed class MapView : GraphicsView, IDrawable
         {
             if (ReferenceEquals(_inertiaCancellation, cancellation))
                 _inertiaCancellation = null;
+            EndCameraInteraction();
         }
     }
 
-    void QueueTileRefresh()
+    void QueueTileRefresh(bool immediate = false)
     {
-        if (TileSource is null || Width <= 0 || Height <= 0)
+        if (TileSource is null
+            || !TileLoadingEnabled
+            || !HasValidSize()
+            || Handler is null)
             return;
 
-        _ = RefreshTilesAsync();
+        Interlocked.Increment(ref _refreshRevision);
+        if (immediate)
+            _refreshImmediateRequested = true;
+
+        if (_refreshScheduleTask is not null)
+            return;
+
+        var schedule = new CancellationTokenSource();
+        _refreshScheduleCancellation = schedule;
+        var task = ScheduleTileRefreshAsync(schedule);
+        if (ReferenceEquals(_refreshScheduleCancellation, schedule))
+            _refreshScheduleTask = task;
     }
 
-    async Task RefreshTilesAsync()
+    async Task ScheduleTileRefreshAsync(CancellationTokenSource schedule)
+    {
+        try
+        {
+            while (!schedule.IsCancellationRequested)
+            {
+                var immediate = _refreshImmediateRequested;
+                _refreshImmediateRequested = false;
+                if (!immediate)
+                {
+                    var quietRevision = Volatile.Read(ref _refreshRevision);
+                    while (true)
+                    {
+                        await Task.Delay(TileRefreshDebounce, schedule.Token);
+                        if (_refreshImmediateRequested)
+                            break;
+
+                        var revision = Volatile.Read(ref _refreshRevision);
+                        if (revision == quietRevision)
+                            break;
+
+                        quietRevision = revision;
+                    }
+                }
+
+                if (_interactionDepth > 0)
+                    continue;
+
+                var refreshRevision = Volatile.Read(ref _refreshRevision);
+                await RefreshTilesAsync(schedule.Token);
+                if (schedule.IsCancellationRequested)
+                    return;
+
+                if (refreshRevision == Volatile.Read(ref _refreshRevision)
+                    && !_refreshImmediateRequested)
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_refreshScheduleCancellation, schedule))
+            {
+                _refreshScheduleCancellation = null;
+                _refreshScheduleTask = null;
+                _refreshImmediateRequested = false;
+            }
+            schedule.Dispose();
+        }
+    }
+
+    void StopRefreshSchedule()
+    {
+        var schedule = _refreshScheduleCancellation;
+        _refreshScheduleCancellation = null;
+        _refreshScheduleTask = null;
+        _refreshImmediateRequested = false;
+        schedule?.Cancel();
+    }
+
+    async Task RefreshTilesAsync(CancellationToken cancellationToken = default)
     {
         var source = TileSource;
-        if (source is null || Width <= 0 || Height <= 0)
+        if (source is null || !TileLoadingEnabled || !HasValidSize())
             return;
 
-        _tileRefreshCancellation?.Cancel();
-        using var cancellation = new CancellationTokenSource();
-        _tileRefreshCancellation = cancellation;
+        var generation = Interlocked.Increment(ref _tileRefreshGeneration);
+        using var cancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var previous = Interlocked.Exchange(
+            ref _tileRefreshCancellation,
+            cancellation);
+        previous?.Cancel();
         var token = cancellation.Token;
         IsLoading = true;
         ErrorMessage = null;
@@ -595,28 +892,63 @@ public sealed class MapView : GraphicsView, IDrawable
                 Viewport.Zoom,
                 Width,
                 Height);
-            var loaded = await Task.WhenAll(keys.Select(async key =>
+            var candidates = keys
+                .Where(key => !_tiles.ContainsKey(key) || _staleTiles.Contains(key))
+                .OrderBy(key => TileDistanceFromViewportCenter(key))
+                .ToArray();
+            var failed = 0;
+            var acceptResults = true;
+            var pending = candidates
+                .Select(key => LoadDecodedTileAsync(source, key, token))
+                .ToList();
+            while (pending.Count > 0)
             {
-                var tile = await source.GetTileAsync(key, token);
-                return (key, image: tile is null ? null : Decode(tile));
-            }));
+                var completed = await Task.WhenAny(pending);
+                pending.Remove(completed);
+                var result = await completed;
 
-            if (token.IsCancellationRequested || !ReferenceEquals(source, TileSource))
+                if (token.IsCancellationRequested
+                    || !IsCurrentTileRefresh(source, generation))
+                {
+                    acceptResults = false;
+                    if (result.Image is IDisposable disposable)
+                        disposable.Dispose();
+                    continue;
+                }
+
+                if (result.Image is null)
+                {
+                    if (result.Failed)
+                        failed++;
+                    continue;
+                }
+
+                ReplaceTile(result.Key, result.Image, result.IsStale);
+                TrimTiles(keys);
+                Invalidate();
+            }
+
+            if (!acceptResults)
                 return;
 
-            foreach (var result in loaded)
+            TrimTiles(keys);
+            if (failed > 0)
             {
-                if (result.image is not null)
-                    ReplaceTile(result.key, result.image);
+                var available = keys.Count(key => _tiles.ContainsKey(key));
+                ErrorMessage = available > 0
+                    ? $"{failed} map tile{(failed == 1 ? string.Empty : "s")} unavailable. Retry."
+                    : "Map tiles are unavailable. Check the connection and retry.";
             }
+            Invalidate();
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (
+            cancellation.IsCancellationRequested
+            || !IsCurrentTileRefresh(source, generation))
         {
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsCurrentTileRefresh(source, generation))
         {
-            if (!token.IsCancellationRequested)
-                ErrorMessage = exception.Message;
+            ErrorMessage = $"Map tiles are unavailable: {exception.Message}";
         }
         finally
         {
@@ -629,6 +961,66 @@ public sealed class MapView : GraphicsView, IDrawable
         }
     }
 
+    async Task<DecodedTile> LoadDecodedTileAsync(
+        IMapRasterSource source,
+        MapTileKey key,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tile = await source.GetTileAsync(key, cancellationToken);
+            if (tile is null)
+                return new DecodedTile(key, null, false, true);
+
+            var image = Decode(tile);
+            return new DecodedTile(
+                key,
+                image,
+                tile.IsStale,
+                image is null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new DecodedTile(key, null, false, false);
+        }
+        catch
+        {
+            return new DecodedTile(key, null, false, true);
+        }
+    }
+
+    double TileDistanceFromViewportCenter(MapTileKey key)
+    {
+        var rectangle = WebMercatorTiles.TilePixelRect(
+            Viewport.Center,
+            Viewport.Zoom,
+            Width,
+            Height,
+            key);
+        var deltaX = rectangle.X + rectangle.Width / 2 - Width / 2;
+        var deltaY = rectangle.Y + rectangle.Height / 2 - Height / 2;
+        return deltaX * deltaX + deltaY * deltaY;
+    }
+
+    readonly record struct DecodedTile(
+        MapTileKey Key,
+        GraphicsImage? Image,
+        bool IsStale,
+        bool Failed);
+
+    bool IsCurrentTileRefresh(IMapRasterSource source, long generation) =>
+        ReferenceEquals(source, TileSource)
+        && Volatile.Read(ref _tileRefreshGeneration) == generation;
+
+    static void DisposeDecodedTiles(IEnumerable<DecodedTile> tiles)
+    {
+        foreach (var tile in tiles)
+        {
+            if (tile.Image is IDisposable disposable)
+                disposable.Dispose();
+        }
+    }
+
     static GraphicsImage? Decode(MapRasterTile tile)
     {
         try
@@ -636,17 +1028,13 @@ public sealed class MapView : GraphicsView, IDrawable
             using var stream = new MemoryStream(tile.PngBytes, writable: false);
             return PlatformImage.FromStream(stream);
         }
-        catch (ArgumentException)
-        {
-            return null;
-        }
-        catch (InvalidDataException)
+        catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return null;
         }
     }
 
-    void ReplaceTile(MapTileKey key, GraphicsImage image)
+    void ReplaceTile(MapTileKey key, GraphicsImage image, bool isStale)
     {
         if (_tiles.Remove(key, out var previous)
             && previous is IDisposable disposable)
@@ -655,9 +1043,51 @@ public sealed class MapView : GraphicsView, IDrawable
         }
 
         _tiles[key] = image;
+        _tileLastUsed[key] = ++_tileUseCounter;
+        if (isStale)
+            _staleTiles.Add(key);
+        else
+            _staleTiles.Remove(key);
     }
 
-    void ClearTiles()
+    void TrimTiles(IReadOnlyCollection<MapTileKey> visibleKeys)
+    {
+        var visible = visibleKeys.ToHashSet();
+        while (_tiles.Count > MaximumCachedTiles)
+        {
+            var victim = _tileLastUsed
+                .Where(item => !visible.Contains(item.Key))
+                .OrderBy(item => item.Value)
+                .Select(item => item.Key)
+                .FirstOrDefault();
+            if (!_tiles.ContainsKey(victim))
+            {
+                victim = _tileLastUsed
+                    .OrderBy(item => item.Value)
+                    .Select(item => item.Key)
+                    .FirstOrDefault();
+            }
+
+            if (!_tiles.ContainsKey(victim))
+                break;
+
+            RemoveTile(victim);
+        }
+    }
+
+    void RemoveTile(MapTileKey key)
+    {
+        if (_tiles.Remove(key, out var tile)
+            && tile is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
+        _tileLastUsed.Remove(key);
+        _staleTiles.Remove(key);
+    }
+
+    void DisposeTiles()
     {
         foreach (var tile in _tiles.Values)
         {
@@ -666,6 +1096,8 @@ public sealed class MapView : GraphicsView, IDrawable
         }
 
         _tiles.Clear();
+        _tileLastUsed.Clear();
+        _staleTiles.Clear();
     }
 
     void CancelInertia()
@@ -673,4 +1105,10 @@ public sealed class MapView : GraphicsView, IDrawable
         _inertiaCancellation?.Cancel();
         _inertiaCancellation = null;
     }
+
+    bool HasValidSize() =>
+        double.IsFinite(Width)
+        && double.IsFinite(Height)
+        && Width > 0
+        && Height > 0;
 }
