@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Ndjson</PackageId>
+    <RootNamespace>Novolis.Maui.Ndjson</RootNamespace>
+    <Description>MAUI slice viewer for large local NDJSON files.</Description>
+    <PackageTags>maui;ndjson;jsonl;viewer;novolis</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+    <LibraryReference Include="Novolis.IO.Ndjson" />
+    <LibraryReference Include="Novolis.Maui.GraphicalProfile" />
+  </ItemGroup>
+</Project>
