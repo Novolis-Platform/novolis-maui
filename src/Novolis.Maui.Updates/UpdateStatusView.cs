@@ -14,6 +14,7 @@ namespace Novolis.Maui.Updates;
 /// </summary>
 public sealed class UpdateStatusView : ContentView
 {
+    /// <summary>Bindable update coordinator property.</summary>
     public static readonly BindableProperty CoordinatorProperty =
         BindableProperty.Create(
             nameof(Coordinator),
@@ -22,6 +23,7 @@ public sealed class UpdateStatusView : ContentView
             null,
             propertyChanged: OnCoordinatorChanged);
 
+    /// <summary>Bindable host-actions property.</summary>
     public static readonly BindableProperty HostActionsProperty =
         BindableProperty.Create(
             nameof(HostActions),
@@ -29,6 +31,7 @@ public sealed class UpdateStatusView : ContentView
             typeof(UpdateStatusView),
             null);
 
+    /// <summary>Bindable notification-mode property.</summary>
     public static readonly BindableProperty NotificationModeProperty =
         BindableProperty.Create(
             nameof(NotificationMode),
@@ -36,6 +39,7 @@ public sealed class UpdateStatusView : ContentView
             typeof(UpdateStatusView),
             UpdateNotificationMode.Inline);
 
+    /// <summary>Bindable inline-visibility property.</summary>
     public static readonly BindableProperty ShowInlineProperty =
         BindableProperty.Create(
             nameof(ShowInline),

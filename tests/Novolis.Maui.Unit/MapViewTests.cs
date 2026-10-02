@@ -383,7 +383,8 @@ public sealed class MapViewTests
             MapTileKey key,
             CancellationToken cancellationToken = default)
         {
-            Requests.Add(key);
+            lock (Requests)
+                Requests.Add(key);
             return Handler is null
                 ? ValueTask.FromResult<MapRasterTile?>(null)
                 : new ValueTask<MapRasterTile?>(
