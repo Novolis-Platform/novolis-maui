@@ -4,6 +4,7 @@ using Microsoft.Maui.Graphics;
 using Novolis.Maui.GraphicalProfile;
 using Novolis.Registry.Primitives.Updates;
 using Novolis.Registry.Updates;
+using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
 
 namespace Novolis.Maui.Updates;
 
@@ -107,8 +108,8 @@ public sealed class UpdateStatusView : ContentView
             Content = content,
             StrokeThickness = 1,
         };
-        card.SetDynamicResource(VisualElement.BackgroundColorProperty, GraphicalProfile.SurfaceResourceKey);
-        card.SetDynamicResource(Shape.StrokeProperty, GraphicalProfile.BorderResourceKey);
+        card.SetDynamicResource(VisualElement.BackgroundColorProperty, Profile.SurfaceResourceKey);
+        card.SetDynamicResource(Border.StrokeProperty, Profile.BorderResourceKey);
         Content = card;
         IsVisible = ShowInline;
     }
@@ -146,8 +147,8 @@ public sealed class UpdateStatusView : ContentView
     {
         if (Content is Border card)
         {
-            card.SetDynamicResource(VisualElement.BackgroundColorProperty, GraphicalProfile.SurfaceResourceKey);
-            card.SetDynamicResource(Shape.StrokeProperty, GraphicalProfile.BorderResourceKey);
+            card.SetDynamicResource(VisualElement.BackgroundColorProperty, Profile.SurfaceResourceKey);
+            card.SetDynamicResource(Border.StrokeProperty, Profile.BorderResourceKey);
         }
     }
 

@@ -1603,6 +1603,19 @@ public sealed class MapView : GraphicsView, IDrawable
         _inertiaCancellation = null;
     }
 
+    /// <summary>Requests a redraw and records it for diagnostics.</summary>
+    public void RequestRender()
+    {
+        PerformanceCounters.RecordRedrawRequest();
+        Invalidate();
+    }
+
+    void InvalidateMap()
+    {
+        PerformanceCounters.RecordRedrawRequest();
+        Invalidate();
+    }
+
     bool HasValidSize() =>
         double.IsFinite(Width)
         && double.IsFinite(Height)
