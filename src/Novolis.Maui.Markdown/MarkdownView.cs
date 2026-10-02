@@ -1,3 +1,4 @@
+using Novolis.Markup.Markdown;
 using Novolis.Maui.WebView;
 
 namespace Novolis.Maui.Markdown;
@@ -37,13 +38,29 @@ public sealed class MarkdownView : ContentView
         default(string),
         propertyChanged: OnContentChanged);
 
+    /// <summary>Directory used to embed local Markdown images.</summary>
+    public static readonly BindableProperty SourceDirectoryProperty = BindableProperty.Create(
+        nameof(SourceDirectory),
+        typeof(string),
+        typeof(MarkdownView),
+        default(string),
+        propertyChanged: OnContentChanged);
+
     private readonly SecureHtmlWebView _web = new();
+    private readonly ZoomableMediaPreview _preview = new();
+    private readonly Grid _root = new();
+    private MarkdownHtmlActionSink _actions = new();
+    private bool _refreshQueued;
+    private string? _renderedHtml;
 
     /// <summary>Creates a Markdown viewer.</summary>
     public MarkdownView()
     {
-        Content = _web;
         _web.InnerView.AutomationId = "DocumentViewer";
+        _web.HostNavigationRequested += OnHostNavigation;
+        _root.Add(_web);
+        _root.Add(_preview);
+        Content = _root;
     }
 
     /// <summary>Gets or sets Markdown source used when <see cref="Html"/> is not set.</summary>
@@ -74,21 +91,73 @@ public sealed class MarkdownView : ContentView
         set => SetValue(TitleProperty, value);
     }
 
+    /// <summary>Gets or sets the document directory for local images.</summary>
+    public string? SourceDirectory
+    {
+        get => (string?)GetValue(SourceDirectoryProperty);
+        set => SetValue(SourceDirectoryProperty, value);
+    }
+
     /// <summary>Inner locked-down WebView.</summary>
     public SecureHtmlWebView WebView => _web;
 
     /// <summary>Refreshes the preview from the current content.</summary>
-    public void Refresh()
+    public void Refresh() => QueueRefresh();
+
+    private void QueueRefresh()
     {
+        if (_refreshQueued)
+            return;
+        _refreshQueued = true;
+        Dispatcher.Dispatch(RefreshNow);
+    }
+
+    private void RefreshNow()
+    {
+        _refreshQueued = false;
         var explicitHtml = Html;
-        _web.Html = explicitHtml is not null
-            ? explicitHtml
-            : MarkdownHtml.FromMarkdown(Markdown ?? string.Empty, Theme, Title);
+        if (explicitHtml is not null)
+        {
+            _actions = new MarkdownHtmlActionSink();
+            AssignHtml(explicitHtml);
+            return;
+        }
+
+        var built = MarkdownHtml.Build(Markdown ?? string.Empty, Theme, Title, SourceDirectory);
+        _actions = built.Actions;
+        AssignHtml(built.Document);
+    }
+
+    private void AssignHtml(string html)
+    {
+        if (string.Equals(html, _renderedHtml, StringComparison.Ordinal))
+            return;
+        _renderedHtml = html;
+        _web.Html = html;
+    }
+
+    private async void OnHostNavigation(object? sender, Uri uri)
+    {
+        if (!MarkdownHtmlActionUris.TryRead(uri, out var kind, out var index))
+            return;
+
+        if (kind is MarkdownHtmlActionKind.Copy)
+        {
+            if ((uint)index >= (uint)_actions.CodeBlocks.Count)
+                return;
+            await Clipboard.Default.SetTextAsync(_actions.CodeBlocks[index]).ConfigureAwait(true);
+            return;
+        }
+
+        if ((uint)index >= (uint)_actions.Previews.Count)
+            return;
+        var asset = _actions.Previews[index];
+        _preview.Show(MarkdownMediaSource.FromDataUri(asset.DataUri), asset.Caption);
     }
 
     private static void OnContentChanged(BindableObject bindable, object oldValue, object newValue)
     {
         if (bindable is MarkdownView view)
-            view.Refresh();
+            view.QueueRefresh();
     }
 }

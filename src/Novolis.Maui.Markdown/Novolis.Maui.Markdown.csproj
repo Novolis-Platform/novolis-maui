@@ -9,6 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" />
     <LibraryReference Include="Novolis.Markup.Markdown.Mermaid.Rendering" />
+    <LibraryReference Include="Novolis.Maui.GraphicalProfile" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Novolis.Maui.WebView\Novolis.Maui.WebView.csproj" />

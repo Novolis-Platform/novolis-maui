@@ -20,6 +20,25 @@ public sealed class MarkdownHtmlTests
         await Assert.That(html).Contains("data-theme=\"dark\"");
         await Assert.That(html).Contains("color-scheme: dark");
         await Assert.That(html).Contains("#0d1117");
+        await Assert.That(html).Contains("novolis-md://preview/0");
+        await Assert.That(html).Contains("media-preview-open");
+    }
+
+    [Test]
+    public async Task FromMarkdown_AddsCodeBlockCopyControl()
+    {
+        var html = MarkdownHtml.FromMarkdown("```csharp\nvar answer = 42;\n```");
+
+        await Assert.That(html).Contains("code-block-copy");
+        await Assert.That(html).Contains("novolis-md://copy/0");
+        await Assert.That(html).Contains("language-csharp");
+    }
+
+    [Test]
+    public async Task Build_KeepsCopyPayload()
+    {
+        var built = MarkdownHtml.Build("```text\nhello\n```");
+        await Assert.That(built.Actions.CodeBlocks[0]).Contains("hello");
     }
 
     [Test]

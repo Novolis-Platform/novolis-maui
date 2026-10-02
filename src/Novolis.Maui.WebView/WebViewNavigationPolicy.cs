@@ -15,8 +15,10 @@ public static class WebViewNavigationPolicy
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             return WebViewNavigationDecision.Cancel;
 
-        return uri.Scheme is "http" or "https" or "mailto"
-            ? WebViewNavigationDecision.OpenExternally
-            : WebViewNavigationDecision.Cancel;
+        if (uri.Scheme is "http" or "https" or "mailto")
+            return WebViewNavigationDecision.OpenExternally;
+        if (string.Equals(uri.Scheme, "novolis-md", StringComparison.OrdinalIgnoreCase))
+            return WebViewNavigationDecision.HandleInternally;
+        return WebViewNavigationDecision.Cancel;
     }
 }

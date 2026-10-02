@@ -28,6 +28,9 @@ public sealed class SecureHtmlWebView : ContentView
     /// <summary>Raised when the user activates an http(s) or mailto URI that must open outside the WebView.</summary>
     public event EventHandler<Uri>? ExternalNavigationRequested;
 
+    /// <summary>Raised when the user activates a host-handled custom scheme such as <c>novolis-md</c>.</summary>
+    public event EventHandler<Uri>? HostNavigationRequested;
+
     /// <summary>Complete HTML document assigned to <see cref="HtmlWebViewSource"/>.</summary>
     public string? Html
     {
@@ -56,6 +59,13 @@ public sealed class SecureHtmlWebView : ContentView
             return;
 
         args.Cancel = true;
+        if (decision is WebViewNavigationDecision.HandleInternally)
+        {
+            if (Uri.TryCreate(args.Url, UriKind.Absolute, out var hostUri))
+                HostNavigationRequested?.Invoke(this, hostUri);
+            return;
+        }
+
         if (decision is not WebViewNavigationDecision.OpenExternally)
             return;
 

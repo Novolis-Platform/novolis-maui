@@ -11,4 +11,7 @@ public enum WebViewNavigationDecision
 
     /// <summary>Cancel in-WebView navigation and open the URI in the system handler.</summary>
     OpenExternally,
+
+    /// <summary>Cancel in-WebView navigation and let the host handle a custom scheme.</summary>
+    HandleInternally,
 }
