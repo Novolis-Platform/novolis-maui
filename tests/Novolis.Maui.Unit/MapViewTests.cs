@@ -89,6 +89,71 @@ public sealed class MapViewTests
     }
 
     [Test]
+    public async Task MapView_bounds_concurrent_requests_and_records_visible_work()
+    {
+        var active = 0;
+        var peak = 0;
+        var source = new RecordingRasterSource
+        {
+            Handler = async (_, cancellationToken) =>
+            {
+                var current = Interlocked.Increment(ref active);
+                while (true)
+                {
+                    var observed = Volatile.Read(ref peak);
+                    if (current <= observed
+                        || Interlocked.CompareExchange(ref peak, current, observed) == observed)
+                    {
+                        break;
+                    }
+                }
+
+                await Task.Delay(5, cancellationToken);
+                Interlocked.Decrement(ref active);
+                return null;
+            },
+        };
+        var map = new MapView
+        {
+            TileSource = source,
+            Viewport = new MapViewport(new GeoCoordinate(0, 0), 8),
+        };
+        map.Measure(2_048, 2_048);
+        map.Arrange(new Rect(0, 0, 2_048, 2_048));
+
+        await map.RefreshTilesAsync();
+
+        await Assert.That(peak).IsLessThanOrEqualTo(6);
+        await Assert.That(map.PerformanceCounters.VisibleTileCalculations).IsGreaterThan(0);
+        await Assert.That(map.PerformanceCounters.TileRequestsStarted)
+            .IsEqualTo(source.Requests.Count);
+        await Assert.That(map.PerformanceCounters.TileRequestsCompleted)
+            .IsEqualTo(source.Requests.Count);
+        await Assert.That(map.PerformanceCounters.DuplicateTileRequests).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task MapView_does_not_load_tiles_when_loading_is_disabled()
+    {
+        var source = new RecordingRasterSource
+        {
+            Handler = (_, _) => Task.FromResult<MapRasterTile?>(null),
+        };
+        var map = new MapView
+        {
+            TileSource = source,
+            TileLoadingEnabled = false,
+        };
+        map.Measure(512, 512);
+        map.Arrange(new Rect(0, 0, 512, 512));
+
+        await map.RefreshTilesAsync();
+
+        await Assert.That(source.Requests).IsEmpty();
+        await Assert.That(map.PerformanceCounters.TileRequestsStarted).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task MapView_opt_in_drawing_and_copy_return_developer_data()
     {
         var first = new GeoCoordinate(58.14, 7.99);

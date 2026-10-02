@@ -15,11 +15,13 @@ namespace Novolis.Maui.Map;
 public sealed class MapView : GraphicsView, IDrawable
 {
     const int MaximumCachedTiles = 128;
+    const int MaximumConcurrentTileRequests = 6;
     static readonly TimeSpan TileRefreshDebounce = TimeSpan.FromMilliseconds(90);
 
     readonly Dictionary<MapTileKey, GraphicsImage> _tiles = new();
     readonly Dictionary<MapTileKey, long> _tileLastUsed = new();
     readonly HashSet<MapTileKey> _staleTiles = new();
+    readonly SemaphoreSlim _tileRequestGate = new(MaximumConcurrentTileRequests);
     readonly List<GeoCoordinate> _drawingPoints = [];
     CancellationTokenSource? _tileRefreshCancellation;
     CancellationTokenSource? _refreshScheduleCancellation;
@@ -183,6 +185,9 @@ public sealed class MapView : GraphicsView, IDrawable
     /// <summary>Optional host-provided clipboard writer used by tests or product policy.</summary>
     public Func<string, CancellationToken, Task>? ClipboardWriter { get; set; }
 
+    /// <summary>Deterministic work and resource counters for diagnostics and tests.</summary>
+    public MapPerformanceCounters PerformanceCounters { get; } = new();
+
     /// <summary>
     /// Optional encoded-tile decoder. Hosts and tests can provide a decoder to
     /// control native image creation and release policy.
@@ -294,14 +299,17 @@ public sealed class MapView : GraphicsView, IDrawable
         Viewport = new MapViewport(center, zoom);
 
     /// <summary>Returns exactly the tile keys intersecting the current viewport.</summary>
-    public IReadOnlyList<MapTileKey> GetVisibleTileKeys() =>
-        HasValidSize()
+    public IReadOnlyList<MapTileKey> GetVisibleTileKeys()
+    {
+        PerformanceCounters.RecordVisibleTileCalculation();
+        return HasValidSize()
             ? WebMercatorTiles.VisibleTiles(
                 Viewport.Center,
                 Viewport.Zoom,
                 Width,
                 Height)
             : [];
+    }
 
     /// <summary>Copies the selected coordinate using the configured host clipboard.</summary>
     public Task<bool> CopySelectedCoordinateAsync(
@@ -1395,8 +1403,7 @@ public sealed class MapView : GraphicsView, IDrawable
                     || !IsCurrentTileRefresh(source, generation))
                 {
                     acceptResults = false;
-                    if (result.Image is IDisposable disposable)
-                        disposable.Dispose();
+                    DisposeDecodedImage(result.Image);
                     continue;
                 }
 
@@ -1429,6 +1436,7 @@ public sealed class MapView : GraphicsView, IDrawable
             cancellation.IsCancellationRequested
             || !IsCurrentTileRefresh(source, generation))
         {
+            PerformanceCounters.RecordRefreshCancellation();
         }
         catch (Exception exception) when (IsCurrentTileRefresh(source, generation))
         {
@@ -1450,6 +1458,8 @@ public sealed class MapView : GraphicsView, IDrawable
         MapTileKey key,
         CancellationToken cancellationToken)
     {
+        await _tileRequestGate.WaitAsync(cancellationToken);
+        PerformanceCounters.RecordTileRequestStarted(key);
         try
         {
             var tile = await source.GetTileAsync(key, cancellationToken);
@@ -1457,6 +1467,8 @@ public sealed class MapView : GraphicsView, IDrawable
                 return new DecodedTile(key, null, false, true);
 
             var image = TileDecoder?.Invoke(tile) ?? Decode(tile);
+            if (image is not null)
+                PerformanceCounters.RecordDecodedTileCreated();
             return new DecodedTile(
                 key,
                 image,
@@ -1470,6 +1482,11 @@ public sealed class MapView : GraphicsView, IDrawable
         catch
         {
             return new DecodedTile(key, null, false, true);
+        }
+        finally
+        {
+            PerformanceCounters.RecordTileRequestCompleted(key);
+            _tileRequestGate.Release();
         }
     }
 
@@ -1496,12 +1513,14 @@ public sealed class MapView : GraphicsView, IDrawable
         ReferenceEquals(source, TileSource)
         && Volatile.Read(ref _tileRefreshGeneration) == generation;
 
-    static void DisposeDecodedTiles(IEnumerable<DecodedTile> tiles)
+    void DisposeDecodedImage(GraphicsImage? image, bool stored = false)
     {
-        foreach (var tile in tiles)
+        if (image is IDisposable disposable)
         {
-            if (tile.Image is IDisposable disposable)
-                disposable.Dispose();
+            disposable.Dispose();
+            PerformanceCounters.RecordDecodedTileDisposed();
+            if (stored)
+                PerformanceCounters.RecordDecodedTileRemoved();
         }
     }
 
@@ -1521,13 +1540,12 @@ public sealed class MapView : GraphicsView, IDrawable
     void ReplaceTile(MapTileKey key, GraphicsImage image, bool isStale)
     {
         if (_tiles.Remove(key, out var previous)
-            && previous is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
+            )
+            DisposeDecodedImage(previous, stored: true);
 
         _tiles[key] = image;
         _tileLastUsed[key] = ++_tileUseCounter;
+        PerformanceCounters.RecordDecodedTileStored();
         if (isStale)
             _staleTiles.Add(key);
         else
@@ -1556,16 +1574,14 @@ public sealed class MapView : GraphicsView, IDrawable
                 break;
 
             RemoveTile(victim);
+            PerformanceCounters.RecordCacheEviction();
         }
     }
 
     void RemoveTile(MapTileKey key)
     {
-        if (_tiles.Remove(key, out var tile)
-            && tile is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
+        if (_tiles.Remove(key, out var tile))
+            DisposeDecodedImage(tile, stored: true);
 
         _tileLastUsed.Remove(key);
         _staleTiles.Remove(key);
@@ -1574,10 +1590,7 @@ public sealed class MapView : GraphicsView, IDrawable
     void DisposeTiles()
     {
         foreach (var tile in _tiles.Values)
-        {
-            if (tile is IDisposable disposable)
-                disposable.Dispose();
-        }
+            DisposeDecodedImage(tile, stored: true);
 
         _tiles.Clear();
         _tileLastUsed.Clear();
