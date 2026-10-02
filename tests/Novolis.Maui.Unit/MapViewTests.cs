@@ -1,3 +1,4 @@
+using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 using Novolis.IO.Maps;
 using Novolis.Math.Geometry;
@@ -84,6 +85,125 @@ public sealed class MapViewTests
         await Assert.That(copied).IsEqualTo("58.140000, 7.990000");
         await Assert.That(await map.CopySelectedJsonAsync()).IsTrue();
         await Assert.That(copied).Contains("\"id\": \"office\"");
+    }
+
+    [Test]
+    public async Task MapView_keyboard_commands_are_disabled_until_opted_in()
+    {
+        var map = new MapView
+        {
+            SelectedCoordinate = new GeoCoordinate(58.14, 7.99),
+        };
+        map.Measure(512, 512);
+        map.Arrange(new Rect(0, 0, 512, 512));
+        var initialViewport = map.Viewport;
+        var copyAttempts = 0;
+        map.ClipboardWriter = (_, _) =>
+        {
+            copyAttempts++;
+            return Task.CompletedTask;
+        };
+
+        await Assert.That(await map.ExecuteKeyboardCommandAsync(MapKeyboardCommand.CopyCoordinate))
+            .IsFalse();
+        await Assert.That(await map.ExecuteKeyboardCommandAsync(MapKeyboardCommand.ZoomIn))
+            .IsFalse();
+        await Assert.That(await map.ExecuteKeyboardCommandAsync(MapKeyboardCommand.PanLeft))
+            .IsFalse();
+        await Assert.That(await map.ExecuteKeyboardCommandAsync(MapKeyboardCommand.CompleteDrawing))
+            .IsFalse();
+        await Assert.That(await map.ExecuteKeyboardCommandAsync(MapKeyboardCommand.CancelDrawing))
+            .IsFalse();
+        await Assert.That(copyAttempts).IsEqualTo(0);
+        await Assert.That(map.Viewport).IsEqualTo(initialViewport);
+
+        map.InteractionOptions = new MapInteractionOptions
+        {
+            EnableClipboardShortcuts = true,
+            EnableKeyboardNavigation = true,
+            EnableDrawing = true,
+        };
+        await Assert.That(await map.ExecuteKeyboardCommandAsync(MapKeyboardCommand.CopyCoordinate))
+            .IsTrue();
+        await Assert.That(await map.ExecuteKeyboardCommandAsync(MapKeyboardCommand.ZoomIn))
+            .IsTrue();
+        await Assert.That(map.Viewport.Zoom).IsGreaterThan(initialViewport.Zoom);
+    }
+
+    [Test]
+    public async Task MapView_copy_returns_false_for_clipboard_failure_and_preserves_cancellation()
+    {
+        var map = new MapView
+        {
+            SelectedCoordinate = new GeoCoordinate(58.14, 7.99),
+            ClipboardWriter = (_, _) =>
+                Task.FromException(new InvalidOperationException("clipboard unavailable")),
+        };
+
+        await Assert.That(await map.CopySelectedCoordinateAsync()).IsFalse();
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.That(async () =>
+                await map.CopySelectedCoordinateAsync(cancellation.Token))
+            .Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task MapView_selection_retains_marker_payload_and_does_not_repeat_state_events()
+    {
+        var point = new GeoCoordinate(58.14, 7.99);
+        var marker = new MapMarker(
+            "office",
+            point,
+            "Office",
+            Metadata: new Dictionary<string, string> { ["kind"] = "poi" },
+            Tag: "payload");
+        var map = new MapView { Markers = [marker] };
+        var selectionChanges = 0;
+        map.SelectionChanged += () => selectionChanges++;
+
+        map.SelectedCoordinate = point;
+        map.SelectedCoordinate = point;
+
+        await Assert.That(map.SelectedMarker).IsEqualTo(marker);
+        await Assert.That(map.SelectedMarker!.Metadata!["kind"]).IsEqualTo("poi");
+        await Assert.That(map.SelectedMarker.Tag).IsEqualTo("payload");
+        await Assert.That(selectionChanges).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MapView_circle_drawing_uses_the_latest_edge_preview()
+    {
+        var center = new GeoCoordinate(58.14, 7.99);
+        var firstEdge = new GeoCoordinate(58.15, 8.01);
+        var latestEdge = new GeoCoordinate(58.16, 8.03);
+        var map = new MapView
+        {
+            InteractionOptions = new MapInteractionOptions { EnableDrawing = true },
+        };
+
+        await Assert.That(map.BeginDrawing(GeoDrawingKind.Circle)).IsTrue();
+        await Assert.That(map.AddDrawingPoint(center)).IsTrue();
+        await Assert.That(map.AddDrawingPoint(firstEdge)).IsTrue();
+        await Assert.That(map.AddDrawingPoint(latestEdge)).IsTrue();
+
+        var drawing = map.CompleteDrawing();
+        await Assert.That(drawing).IsNotNull();
+        await Assert.That(drawing!.Points).Count().IsEqualTo(2);
+        await Assert.That(drawing.Points[1]).IsEqualTo(latestEdge);
+    }
+
+    [Test]
+    public async Task MapView_registers_a_native_double_tap_zoom_gesture()
+    {
+        var doubleTap = mapGestureRecognizers(new MapView())
+            .SingleOrDefault(gesture => gesture.NumberOfTapsRequired == 2);
+
+        await Assert.That(doubleTap).IsNotNull();
+
+        static IEnumerable<TapGestureRecognizer> mapGestureRecognizers(MapView map) =>
+            map.GestureRecognizers.OfType<TapGestureRecognizer>();
     }
 
     [Test]
