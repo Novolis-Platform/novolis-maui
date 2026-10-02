@@ -642,11 +642,13 @@ public sealed class MapView : GraphicsView, IDrawable
                 / worldPixels;
             var radius = overlay.Circle.RadiusMeters / metersPerPixel;
 
-            canvas.FillColor = Colors.CornflowerBlue.WithAlpha(0.18f);
+            var ink = overlay.Ink ?? Colors.DarkSlateBlue;
+            canvas.FillColor = ink.WithAlpha(0.18f);
             canvas.FillCircle((float)center.X, (float)center.Y, (float)radius);
-            canvas.StrokeColor = Colors.DarkSlateBlue;
+            canvas.StrokeColor = ink;
             canvas.StrokeSize = 2;
             canvas.DrawCircle((float)center.X, (float)center.Y, (float)radius);
+            DrawLabel(canvas, overlay.Label, center.X, center.Y);
         }
     }
 
@@ -659,26 +661,33 @@ public sealed class MapView : GraphicsView, IDrawable
         canvas.StrokeSize = 3;
         foreach (var track in Tracks)
         {
-            for (var index = 1; index < track.Points.Count; index++)
+            if (track.Points.Count < 2)
+                continue;
+
+            var pixels = WebMercatorTiles.GeoPathToPixels(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                track.Points);
+            for (var index = 1; index < pixels.Count; index++)
             {
-                var first = WebMercatorTiles.GeoToPixel(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    track.Points[index - 1]);
-                var second = WebMercatorTiles.GeoToPixel(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    track.Points[index]);
+                var amount = pixels.Count <= 2
+                    ? 0
+                    : (index - 1) / (double)(pixels.Count - 2);
+                canvas.StrokeColor = TrackInk(track, amount);
                 canvas.DrawLine(
-                    (float)first.X,
-                    (float)first.Y,
-                    (float)second.X,
-                    (float)second.Y);
+                    (float)pixels[index - 1].X,
+                    (float)pixels[index - 1].Y,
+                    (float)pixels[index].X,
+                    (float)pixels[index].Y);
             }
+
+            DrawLabel(
+                canvas,
+                track.Label,
+                pixels[pixels.Count / 2].X,
+                pixels[pixels.Count / 2].Y);
         }
     }
 
@@ -692,25 +701,19 @@ public sealed class MapView : GraphicsView, IDrawable
             if (polygon.Points.Count < 2)
                 continue;
 
+            var pixels = WebMercatorTiles.GeoPathToPixels(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                polygon.Points);
             if (polygon.Fill is { } fill && polygon.Points.Count >= 3)
             {
                 var path = new PathF();
-                var first = WebMercatorTiles.GeoToPixel(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    polygon.Points[0]);
-                path.MoveTo((float)first.X, (float)first.Y);
-                for (var index = 1; index < polygon.Points.Count; index++)
+                path.MoveTo((float)pixels[0].X, (float)pixels[0].Y);
+                for (var index = 1; index < pixels.Count; index++)
                 {
-                    var point = WebMercatorTiles.GeoToPixel(
-                        Viewport.Center,
-                        Viewport.Zoom,
-                        Width,
-                        Height,
-                        polygon.Points[index]);
-                    path.LineTo((float)point.X, (float)point.Y);
+                    path.LineTo((float)pixels[index].X, (float)pixels[index].Y);
                 }
 
                 path.Close();
@@ -718,49 +721,31 @@ public sealed class MapView : GraphicsView, IDrawable
                 canvas.FillPath(path);
             }
 
-            canvas.StrokeColor = Colors.DarkSlateBlue;
+            canvas.StrokeColor = polygon.Ink ?? Colors.DarkSlateBlue;
             canvas.StrokeSize = 2;
-            for (var index = 1; index < polygon.Points.Count; index++)
+            for (var index = 1; index < pixels.Count; index++)
             {
-                var first = WebMercatorTiles.GeoToPixel(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    polygon.Points[index - 1]);
-                var second = WebMercatorTiles.GeoToPixel(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    polygon.Points[index]);
                 canvas.DrawLine(
-                    (float)first.X,
-                    (float)first.Y,
-                    (float)second.X,
-                    (float)second.Y);
+                    (float)pixels[index - 1].X,
+                    (float)pixels[index - 1].Y,
+                    (float)pixels[index].X,
+                    (float)pixels[index].Y);
             }
 
             if (polygon.Points[0] != polygon.Points[^1])
             {
-                var first = WebMercatorTiles.GeoToPixel(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    polygon.Points[^1]);
-                var second = WebMercatorTiles.GeoToPixel(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    polygon.Points[0]);
                 canvas.DrawLine(
-                    (float)first.X,
-                    (float)first.Y,
-                    (float)second.X,
-                    (float)second.Y);
+                    (float)pixels[^1].X,
+                    (float)pixels[^1].Y,
+                    (float)pixels[0].X,
+                    (float)pixels[0].Y);
             }
+
+            DrawLabel(
+                canvas,
+                polygon.Label,
+                pixels.Average(point => point.X),
+                pixels.Average(point => point.Y));
         }
     }
 
@@ -792,47 +777,61 @@ public sealed class MapView : GraphicsView, IDrawable
             return;
         }
 
-        for (var index = 1; index < _drawingPoints.Count; index++)
+        var pixels = WebMercatorTiles.GeoPathToPixels(
+            Viewport.Center,
+            Viewport.Zoom,
+            Width,
+            Height,
+            _drawingPoints);
+        for (var index = 1; index < pixels.Count; index++)
         {
-            var first = WebMercatorTiles.GeoToPixel(
-                Viewport.Center,
-                Viewport.Zoom,
-                Width,
-                Height,
-                _drawingPoints[index - 1]);
-            var second = WebMercatorTiles.GeoToPixel(
-                Viewport.Center,
-                Viewport.Zoom,
-                Width,
-                Height,
-                _drawingPoints[index]);
             canvas.DrawLine(
-                (float)first.X,
-                (float)first.Y,
-                (float)second.X,
-                (float)second.Y);
+                (float)pixels[index - 1].X,
+                (float)pixels[index - 1].Y,
+                (float)pixels[index].X,
+                (float)pixels[index].Y);
         }
 
-        if (kind == GeoDrawingKind.Polygon && _drawingPoints.Count >= 3)
+        if (kind == GeoDrawingKind.Polygon && pixels.Count >= 3)
         {
-            var first = WebMercatorTiles.GeoToPixel(
-                Viewport.Center,
-                Viewport.Zoom,
-                Width,
-                Height,
-                _drawingPoints[^1]);
-            var second = WebMercatorTiles.GeoToPixel(
-                Viewport.Center,
-                Viewport.Zoom,
-                Width,
-                Height,
-                _drawingPoints[0]);
             canvas.DrawLine(
-                (float)first.X,
-                (float)first.Y,
-                (float)second.X,
-                (float)second.Y);
+                (float)pixels[^1].X,
+                (float)pixels[^1].Y,
+                (float)pixels[0].X,
+                (float)pixels[0].Y);
         }
+    }
+
+    static Color TrackInk(MapTrackOverlay track, double amount)
+    {
+        if (track.FromInk is not { } from)
+            return Colors.DarkSlateBlue;
+        if (track.ToInk is not { } to)
+            return from;
+
+        var clamped = (float)global::System.Math.Clamp(amount, 0, 1);
+        return Color.FromRgba(
+            from.Red + (to.Red - from.Red) * clamped,
+            from.Green + (to.Green - from.Green) * clamped,
+            from.Blue + (to.Blue - from.Blue) * clamped,
+            from.Alpha + (to.Alpha - from.Alpha) * clamped);
+    }
+
+    static void DrawLabel(ICanvas canvas, string? label, double x, double y)
+    {
+        if (string.IsNullOrWhiteSpace(label))
+            return;
+
+        canvas.FontColor = Colors.DarkSlateGray;
+        canvas.FontSize = 11;
+        canvas.DrawString(
+            label,
+            (float)x + 6,
+            (float)y - 10,
+            220,
+            20,
+            HorizontalAlignment.Left,
+            VerticalAlignment.Center);
     }
 
     void DrawMarkers(ICanvas canvas)
