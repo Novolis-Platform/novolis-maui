@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Map</PackageId>
+    <RootNamespace>Novolis.Maui.Map</RootNamespace>
+    <Description>Provider-neutral MAUI map view with Web Mercator raster tiles and geographic overlays.</Description>
+    <PackageTags>maui;map;xyz;web-mercator;novolis</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+    <LibraryReference Include="Novolis.Math.Geometry" />
+    <LibraryReference Include="Novolis.IO.Maps" />
+  </ItemGroup>
+</Project>
