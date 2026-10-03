@@ -46,7 +46,7 @@ public sealed class MapView : GraphicsView, IDrawable
     bool _panActive;
     bool _pinchActive;
     GeoDrawingKind? _drawingKind;
-    bool _suppressSelectionChanged;
+    GeoCoordinate? _selectedCoordinate;
 
     /// <summary>Creates a map view with a neutral initial viewport.</summary>
     public MapView()
@@ -139,8 +139,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
-            SelectedMarker = field?.FirstOrDefault(
-                marker => marker.Position == SelectedCoordinate);
+            ReconcileOverlaySelection();
             InvalidateMap();
         }
     }
@@ -152,6 +151,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
+            ReconcileOverlaySelection();
             InvalidateMap();
         }
     }
@@ -163,6 +163,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
+            ReconcileOverlaySelection();
             InvalidateMap();
         }
     }
@@ -174,6 +175,7 @@ public sealed class MapView : GraphicsView, IDrawable
         set
         {
             field = value;
+            ReconcileOverlaySelection();
             InvalidateMap();
         }
     }
@@ -197,6 +199,12 @@ public sealed class MapView : GraphicsView, IDrawable
     /// <summary>Currently selected marker, if the selected coordinate came from one.</summary>
     public MapMarker? SelectedMarker { get; private set; }
 
+    /// <summary>Currently selected typed overlay, when selection came from an overlay.</summary>
+    public MapOverlayKey? SelectedOverlay { get; private set; }
+
+    /// <summary>Active drawing mode, or null when the map is not drawing.</summary>
+    public GeoDrawingKind? ActiveDrawingKind => _drawingKind;
+
     /// <summary>Whether a host-started drawing session is active.</summary>
     public bool IsDrawing => _drawingKind is not null;
 
@@ -206,17 +214,16 @@ public sealed class MapView : GraphicsView, IDrawable
     /// <summary>Selected geographic coordinate, if any.</summary>
     public GeoCoordinate? SelectedCoordinate
     {
-        get;
+        get => _selectedCoordinate;
         set
         {
-            var changed = field != value;
-            field = value;
-            SelectedMarker = field is { } coordinate
-                ? Markers?.FirstOrDefault(marker => marker.Position == coordinate)
+            var marker = value is { } coordinate
+                ? Markers?.FirstOrDefault(item => item.Position == coordinate)
                 : null;
-            InvalidateMap();
-            if (changed && !_suppressSelectionChanged)
-                SelectionChanged?.Invoke();
+            SetSelection(
+                value,
+                marker,
+                marker is null ? null : MarkerKey(marker));
         }
     }
 
@@ -224,14 +231,43 @@ public sealed class MapView : GraphicsView, IDrawable
     public void SelectCoordinate(GeoCoordinate coordinate)
     {
         var marker = Markers?.FirstOrDefault(item => item.Position == coordinate);
-        ApplyInteractionSelection(coordinate, marker);
+        ApplyInteractionSelection(
+            coordinate,
+            marker,
+            marker is null ? null : MarkerKey(marker));
     }
 
     /// <summary>Selects a marker and retains its metadata and host tag.</summary>
     public void SelectMarker(MapMarker marker)
     {
         ArgumentNullException.ThrowIfNull(marker);
-        ApplyInteractionSelection(marker.Position, marker);
+        ApplyInteractionSelection(marker.Position, marker, MarkerKey(marker));
+    }
+
+    /// <summary>Selects a host-owned overlay by type-qualified identity.</summary>
+    public bool SelectOverlay(MapOverlayKey key)
+    {
+        if (!TryResolveOverlay(key, out var coordinate, out var marker))
+        {
+            ClearSelection();
+            return false;
+        }
+
+        ApplyInteractionSelection(coordinate, marker, key);
+        return true;
+    }
+
+    /// <summary>Clears any selected coordinate and overlay.</summary>
+    public void ClearSelection() => SetSelection(null, null, null);
+
+    /// <summary>Requests removal of the selected overlay without mutating host collections.</summary>
+    public bool RequestEraseSelectedOverlay()
+    {
+        if (SelectedOverlay is not { } key)
+            return false;
+
+        OverlayEraseRequested?.Invoke(key);
+        return true;
     }
 
     /// <summary>Optional attribution override shown in the lower-left corner.</summary>
@@ -293,6 +329,15 @@ public sealed class MapView : GraphicsView, IDrawable
 
     /// <summary>Raised when the selected marker or coordinate changes.</summary>
     public event Action? SelectionChanged;
+
+    /// <summary>Raised when the selected overlay changes, including a clear selection.</summary>
+    public event Action<MapOverlayKey?>? OverlaySelectionChanged;
+
+    /// <summary>Raised when a selectable overlay is chosen by the user or host.</summary>
+    public event Action<MapOverlayKey>? OverlaySelected;
+
+    /// <summary>Requests that the host remove a selected overlay from its source collection.</summary>
+    public event Action<MapOverlayKey>? OverlayEraseRequested;
 
     /// <summary>Sets the camera center and zoom.</summary>
     public void SetViewport(GeoCoordinate center, double zoom) =>
@@ -389,6 +434,10 @@ public sealed class MapView : GraphicsView, IDrawable
                     return false;
                 CancelDrawing();
                 return true;
+            case MapKeyboardCommand.EraseSelectedOverlay:
+                if (!InteractionOptions.EnableOverlayErasure)
+                    return false;
+                return RequestEraseSelectedOverlay();
             default:
                 return false;
         }
@@ -412,7 +461,8 @@ public sealed class MapView : GraphicsView, IDrawable
         if (_drawingKind is not { } kind)
             return false;
 
-        if (kind == GeoDrawingKind.Circle && _drawingPoints.Count >= 1)
+        if ((kind is GeoDrawingKind.Circle or GeoDrawingKind.Rectangle)
+            && _drawingPoints.Count >= 1)
         {
             if (_drawingPoints.Count == 1)
                 _drawingPoints.Add(coordinate);
@@ -426,6 +476,42 @@ public sealed class MapView : GraphicsView, IDrawable
         InvalidateMap();
         if (kind == GeoDrawingKind.Point)
             CompleteDrawing();
+        return true;
+    }
+
+    /// <summary>
+    /// Routes a platform-hosted screen tap through the same selection and drawing
+    /// path as the MAUI gesture recognizer.
+    /// </summary>
+    public bool HandleScreenTap(double screenX, double screenY)
+    {
+        if (!HasValidSize())
+            return false;
+
+        if (IsDrawing)
+        {
+            return AddDrawingPoint(
+                WebMercatorTiles.PixelToGeo(
+                    Viewport.Center,
+                    Viewport.Zoom,
+                    Width,
+                    Height,
+                    screenX,
+                    screenY));
+        }
+
+        var hit = HitTestOverlay(screenX, screenY);
+        if (hit is { } overlay)
+            return SelectOverlay(overlay.Key);
+
+        SelectCoordinate(
+            WebMercatorTiles.PixelToGeo(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                screenX,
+                screenY));
         return true;
     }
 
@@ -650,11 +736,12 @@ public sealed class MapView : GraphicsView, IDrawable
                 / worldPixels;
             var radius = overlay.Circle.RadiusMeters / metersPerPixel;
 
+            var selected = IsSelected(MapOverlayKind.Circle, overlay.Id);
             var ink = overlay.Ink ?? Colors.DarkSlateBlue;
             canvas.FillColor = ink.WithAlpha(0.18f);
             canvas.FillCircle((float)center.X, (float)center.Y, (float)radius);
-            canvas.StrokeColor = ink;
-            canvas.StrokeSize = 2;
+            canvas.StrokeColor = selected ? Colors.Gold : ink;
+            canvas.StrokeSize = selected ? 3 : 2;
             canvas.DrawCircle((float)center.X, (float)center.Y, (float)radius);
             DrawLabel(canvas, overlay.Label, center.X, center.Y);
         }
@@ -665,13 +752,12 @@ public sealed class MapView : GraphicsView, IDrawable
         if (Tracks is not { Count: > 0 })
             return;
 
-        canvas.StrokeColor = Colors.DarkSlateBlue;
-        canvas.StrokeSize = 3;
         foreach (var track in Tracks)
         {
             if (track.Points.Count < 2)
                 continue;
 
+            var selected = IsSelected(MapOverlayKind.Track, track.Id);
             var pixels = WebMercatorTiles.GeoPathToPixels(
                 Viewport.Center,
                 Viewport.Zoom,
@@ -683,7 +769,8 @@ public sealed class MapView : GraphicsView, IDrawable
                 var amount = pixels.Count <= 2
                     ? 0
                     : (index - 1) / (double)(pixels.Count - 2);
-                canvas.StrokeColor = TrackInk(track, amount);
+                canvas.StrokeColor = selected ? Colors.Gold : TrackInk(track, amount);
+                canvas.StrokeSize = selected ? 4 : 3;
                 canvas.DrawLine(
                     (float)pixels[index - 1].X,
                     (float)pixels[index - 1].Y,
@@ -709,6 +796,7 @@ public sealed class MapView : GraphicsView, IDrawable
             if (polygon.Points.Count < 2)
                 continue;
 
+            var selected = IsSelected(MapOverlayKind.Polygon, polygon.Id);
             var pixels = WebMercatorTiles.GeoPathToPixels(
                 Viewport.Center,
                 Viewport.Zoom,
@@ -729,8 +817,8 @@ public sealed class MapView : GraphicsView, IDrawable
                 canvas.FillPath(path);
             }
 
-            canvas.StrokeColor = polygon.Ink ?? Colors.DarkSlateBlue;
-            canvas.StrokeSize = 2;
+            canvas.StrokeColor = selected ? Colors.Gold : polygon.Ink ?? Colors.DarkSlateBlue;
+            canvas.StrokeSize = selected ? 3 : 2;
             for (var index = 1; index < pixels.Count; index++)
             {
                 canvas.DrawLine(
@@ -782,6 +870,30 @@ public sealed class MapView : GraphicsView, IDrawable
                 global::System.Math.Pow(edge.X - center.X, 2)
                 + global::System.Math.Pow(edge.Y - center.Y, 2));
             canvas.DrawCircle((float)center.X, (float)center.Y, (float)radius);
+            return;
+        }
+
+        if (kind == GeoDrawingKind.Rectangle && _drawingPoints.Count >= 2)
+        {
+            var points = new GeoRectangle(
+                    _drawingPoints[0],
+                    _drawingPoints[1])
+                .ClosedCorners;
+            var rectanglePixels = WebMercatorTiles.GeoPathToPixels(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                points);
+            for (var index = 1; index < rectanglePixels.Count; index++)
+            {
+                canvas.DrawLine(
+                    (float)rectanglePixels[index - 1].X,
+                    (float)rectanglePixels[index - 1].Y,
+                    (float)rectanglePixels[index].X,
+                    (float)rectanglePixels[index].Y);
+            }
+
             return;
         }
 
@@ -858,10 +970,16 @@ public sealed class MapView : GraphicsView, IDrawable
             var radius = double.IsFinite(marker.RadiusPixels)
                 ? global::System.Math.Max(2, marker.RadiusPixels)
                 : 6;
-            var selected = SelectedCoordinate == marker.Position;
+            var selected = IsSelected(MapOverlayKind.Marker, marker.Id);
             canvas.FillColor = marker.Ink
                 ?? (selected ? Colors.DarkOrange : Colors.DarkCyan);
             canvas.FillCircle((float)screen.X, (float)screen.Y, (float)radius);
+            if (selected)
+            {
+                canvas.StrokeColor = Colors.Gold;
+                canvas.StrokeSize = 2;
+                canvas.DrawCircle((float)screen.X, (float)screen.Y, (float)(radius + 3));
+            }
 
             if (string.IsNullOrWhiteSpace(marker.Label))
                 continue;
@@ -881,8 +999,7 @@ public sealed class MapView : GraphicsView, IDrawable
 
     void DrawSelectedCoordinate(ICanvas canvas)
     {
-        if (SelectedCoordinate is not { } selected
-            || Markers?.Any(marker => marker.Position == selected) == true)
+        if (SelectedCoordinate is not { } selected || SelectedOverlay is not null)
         {
             return;
         }
@@ -1103,38 +1220,10 @@ public sealed class MapView : GraphicsView, IDrawable
     void OnTapped(object? sender, TappedEventArgs args)
     {
         var position = args.GetPosition(this);
-        if (position is null || !HasValidSize())
+        if (position is null)
             return;
 
-        var point = position.Value;
-        if (IsDrawing)
-        {
-            AddDrawingPoint(
-                WebMercatorTiles.PixelToGeo(
-                    Viewport.Center,
-                    Viewport.Zoom,
-                    Width,
-                    Height,
-                    point.X,
-                    point.Y));
-            return;
-        }
-
-        var marker = HitTestMarker(point.X, point.Y);
-        if (marker is not null)
-        {
-            SelectMarker(marker);
-            return;
-        }
-
-        var selected = WebMercatorTiles.PixelToGeo(
-            Viewport.Center,
-            Viewport.Zoom,
-            Width,
-            Height,
-            point.X,
-            point.Y);
-        SelectCoordinate(selected);
+        HandleScreenTap(position.Value.X, position.Value.Y);
     }
 
     void OnDoubleTapped(object? sender, TappedEventArgs args)
@@ -1145,6 +1234,35 @@ public sealed class MapView : GraphicsView, IDrawable
 
         var point = position.Value;
         ZoomAt(point.X, point.Y, Viewport.Zoom + 1);
+    }
+
+    OverlayHit? HitTestOverlay(double x, double y)
+    {
+        var marker = HitTestMarker(x, y);
+        if (marker is not null)
+            return new OverlayHit(MarkerKey(marker), marker.Position, marker);
+
+        var track = HitTestTrack(x, y);
+        if (track is not null)
+            return new OverlayHit(
+                new MapOverlayKey(MapOverlayKind.Track, track.Id),
+                track.Points[track.Points.Count / 2],
+                null);
+
+        var polygon = HitTestPolygon(x, y);
+        if (polygon is not null)
+            return new OverlayHit(
+                new MapOverlayKey(MapOverlayKind.Polygon, polygon.Id),
+                polygon.Points[0],
+                null);
+
+        var circle = HitTestCircle(x, y);
+        return circle is null
+            ? null
+            : new OverlayHit(
+                new MapOverlayKey(MapOverlayKind.Circle, circle.Id),
+                circle.Circle.Center,
+                null);
     }
 
     MapMarker? HitTestMarker(double x, double y)
@@ -1172,6 +1290,158 @@ public sealed class MapView : GraphicsView, IDrawable
         }
 
         return null;
+    }
+
+    MapTrackOverlay? HitTestTrack(double x, double y)
+    {
+        if (Tracks is not { Count: > 0 })
+            return null;
+
+        for (var itemIndex = Tracks.Count - 1; itemIndex >= 0; itemIndex--)
+        {
+            var track = Tracks[itemIndex];
+            if (track.Points.Count < 2)
+                continue;
+
+            var pixels = WebMercatorTiles.GeoPathToPixels(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                track.Points);
+            for (var index = 1; index < pixels.Count; index++)
+            {
+                if (DistanceToSegmentSquared(
+                        x,
+                        y,
+                        pixels[index - 1].X,
+                        pixels[index - 1].Y,
+                        pixels[index].X,
+                        pixels[index].Y) <= 100)
+                {
+                    return track;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    MapPolygonOverlay? HitTestPolygon(double x, double y)
+    {
+        if (Polygons is not { Count: > 0 })
+            return null;
+
+        for (var itemIndex = Polygons.Count - 1; itemIndex >= 0; itemIndex--)
+        {
+            var polygon = Polygons[itemIndex];
+            if (polygon.Points.Count < 3)
+                continue;
+
+            var pixels = WebMercatorTiles.GeoPathToPixels(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                polygon.Points);
+            if (ContainsPoint(pixels, x, y))
+                return polygon;
+        }
+
+        return null;
+    }
+
+    MapCircleOverlay? HitTestCircle(double x, double y)
+    {
+        if (Circles is not { Count: > 0 })
+            return null;
+
+        for (var index = Circles.Count - 1; index >= 0; index--)
+        {
+            var circle = Circles[index];
+            var center = WebMercatorTiles.GeoToPixel(
+                Viewport.Center,
+                Viewport.Zoom,
+                Width,
+                Height,
+                circle.Circle.Center);
+            var radius = CircleRadiusPixels(circle.Circle);
+            var deltaX = center.X - x;
+            var deltaY = center.Y - y;
+            if (deltaX * deltaX + deltaY * deltaY <= (radius + 8) * (radius + 8))
+                return circle;
+        }
+
+        return null;
+    }
+
+    double CircleRadiusPixels(GeoCircle circle)
+    {
+        var worldPixels = WebMercatorTiles.TileSizePixels
+            * global::System.Math.Pow(2, Viewport.Zoom);
+        var latitudeRadians = circle.Center.Latitude
+            * global::System.Math.PI
+            / 180d;
+        var metersPerPixel = 2
+            * global::System.Math.PI
+            * GeoDistance.MeanEarthRadiusMeters
+            * global::System.Math.Max(0.01, global::System.Math.Cos(latitudeRadians))
+            / worldPixels;
+        return circle.RadiusMeters / metersPerPixel;
+    }
+
+    static bool ContainsPoint(
+        IReadOnlyList<(double X, double Y)> polygon,
+        double x,
+        double y)
+    {
+        var inside = false;
+        for (var index = 0; index < polygon.Count; index++)
+        {
+            var previous = (index + polygon.Count - 1) % polygon.Count;
+            var currentPoint = polygon[index];
+            var previousPoint = polygon[previous];
+            if ((currentPoint.Y > y) == (previousPoint.Y > y))
+                continue;
+
+            var crossingX = (previousPoint.X - currentPoint.X)
+                * (y - currentPoint.Y)
+                / (previousPoint.Y - currentPoint.Y)
+                + currentPoint.X;
+            if (x < crossingX)
+                inside = !inside;
+        }
+
+        return inside;
+    }
+
+    static double DistanceToSegmentSquared(
+        double x,
+        double y,
+        double startX,
+        double startY,
+        double endX,
+        double endY)
+    {
+        var deltaX = endX - startX;
+        var deltaY = endY - startY;
+        var lengthSquared = deltaX * deltaX + deltaY * deltaY;
+        if (lengthSquared <= double.Epsilon)
+        {
+            var pointDeltaX = x - startX;
+            var pointDeltaY = y - startY;
+            return pointDeltaX * pointDeltaX + pointDeltaY * pointDeltaY;
+        }
+
+        var fraction = global::System.Math.Clamp(
+            ((x - startX) * deltaX + (y - startY) * deltaY) / lengthSquared,
+            0,
+            1);
+        var closestX = startX + fraction * deltaX;
+        var closestY = startY + fraction * deltaY;
+        var closestDeltaX = x - closestX;
+        var closestDeltaY = y - closestY;
+        return closestDeltaX * closestDeltaX + closestDeltaY * closestDeltaY;
     }
 
     async Task<bool> CopySelectionAsync(
@@ -1205,27 +1475,112 @@ public sealed class MapView : GraphicsView, IDrawable
 
     void ApplyInteractionSelection(
         GeoCoordinate coordinate,
-        MapMarker? marker)
+        MapMarker? marker,
+        MapOverlayKey? overlay)
     {
-        var changed = SelectedCoordinate != coordinate
-            || !ReferenceEquals(SelectedMarker, marker);
-        _suppressSelectionChanged = true;
-        try
-        {
-            SelectedCoordinate = coordinate;
-            SelectedMarker = marker;
-        }
-        finally
-        {
-            _suppressSelectionChanged = false;
-        }
+        var previousOverlay = SelectedOverlay;
+        SetSelection(coordinate, marker, overlay);
 
         if (marker is not null)
             MarkerSelected?.Invoke(marker);
         PointSelected?.Invoke(coordinate);
-        if (changed)
-            SelectionChanged?.Invoke();
+        if (overlay is { } selected
+            && previousOverlay != selected)
+        {
+            OverlaySelected?.Invoke(selected);
+        }
     }
+
+    bool SetSelection(
+        GeoCoordinate? coordinate,
+        MapMarker? marker,
+        MapOverlayKey? overlay)
+    {
+        var selectionChanged = _selectedCoordinate != coordinate
+            || SelectedOverlay != overlay;
+        var overlayChanged = SelectedOverlay != overlay;
+        _selectedCoordinate = coordinate;
+        SelectedMarker = marker;
+        SelectedOverlay = overlay;
+        InvalidateMap();
+        if (overlayChanged)
+            OverlaySelectionChanged?.Invoke(overlay);
+        if (selectionChanged)
+            SelectionChanged?.Invoke();
+        return selectionChanged;
+    }
+
+    void ReconcileOverlaySelection()
+    {
+        if (SelectedOverlay is { } key)
+        {
+            if (TryResolveOverlay(key, out var coordinate, out var resolvedMarker))
+                SetSelection(coordinate, resolvedMarker, key);
+            else
+                ClearSelection();
+            return;
+        }
+
+        var marker = _selectedCoordinate is { } selected
+            ? Markers?.FirstOrDefault(item => item.Position == selected)
+            : null;
+        SetSelection(
+            _selectedCoordinate,
+            marker,
+            marker is null ? null : MarkerKey(marker));
+    }
+
+    bool TryResolveOverlay(
+        MapOverlayKey key,
+        out GeoCoordinate coordinate,
+        out MapMarker? marker)
+    {
+        marker = null;
+        switch (key.Kind)
+        {
+            case MapOverlayKind.Marker:
+                marker = Markers?.FirstOrDefault(item => item.Id == key.Id);
+                if (marker is not null)
+                {
+                    coordinate = marker.Position;
+                    return true;
+                }
+                break;
+            case MapOverlayKind.Circle:
+                var circle = Circles?.FirstOrDefault(item => item.Id == key.Id);
+                if (circle is not null)
+                {
+                    coordinate = circle.Circle.Center;
+                    return true;
+                }
+                break;
+            case MapOverlayKind.Track:
+                var track = Tracks?.FirstOrDefault(item => item.Id == key.Id);
+                if (track is { Points.Count: > 0 })
+                {
+                    coordinate = track.Points[track.Points.Count / 2];
+                    return true;
+                }
+                break;
+            case MapOverlayKind.Polygon:
+                var polygon = Polygons?.FirstOrDefault(item => item.Id == key.Id);
+                if (polygon is { Points.Count: > 0 })
+                {
+                    coordinate = polygon.Points[0];
+                    return true;
+                }
+                break;
+        }
+
+        coordinate = default;
+        return false;
+    }
+
+    static MapOverlayKey MarkerKey(MapMarker marker) =>
+        new(MapOverlayKind.Marker, marker.Id);
+
+    bool IsSelected(MapOverlayKind kind, string id) =>
+        SelectedOverlay == new MapOverlayKey(kind, id);
 
     static bool HasEnoughDrawingPoints(GeoDrawingKind kind, int count) =>
         kind switch
@@ -1234,8 +1589,14 @@ public sealed class MapView : GraphicsView, IDrawable
             GeoDrawingKind.Circle => count >= 2,
             GeoDrawingKind.Polyline => count >= 2,
             GeoDrawingKind.Polygon => count >= 3,
+            GeoDrawingKind.Rectangle => count >= 2,
             _ => false,
         };
+
+    readonly record struct OverlayHit(
+        MapOverlayKey Key,
+        GeoCoordinate Coordinate,
+        MapMarker? Marker);
 
     async Task RunInertiaAsync(double velocityX, double velocityY)
     {
