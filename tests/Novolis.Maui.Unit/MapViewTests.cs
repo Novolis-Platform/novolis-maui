@@ -402,6 +402,35 @@ public sealed class MapViewTests
     }
 
     [Test]
+    public async Task Projected_scene_selects_neutral_points_and_reconciles_replaced_snapshots()
+    {
+        var sol = new ProjectedScenePoint(
+            "sol",
+            0,
+            0,
+            "Sol",
+            radiusPixels: 8,
+            tag: "catalog-entry");
+        var proxima = new ProjectedScenePoint("proxima", 4, -3, "Proxima Centauri");
+        var scene = new ProjectedSceneView { Points = [sol, proxima] };
+        scene.Measure(512, 512);
+        scene.Arrange(new Rect(0, 0, 512, 512));
+        scene.SetCamera(0, 0, 10);
+        ProjectedScenePoint? selected = null;
+        scene.PointSelected += point => selected = point;
+
+        await Assert.That(scene.HandleScreenTap(256, 256)).IsTrue();
+        await Assert.That(scene.SelectedPoint?.Id).IsEqualTo("sol");
+        await Assert.That(selected?.Tag).IsEqualTo("catalog-entry");
+
+        scene.Points = [proxima];
+        await Assert.That(scene.SelectedPoint).IsNull();
+
+        scene.FitToPoints();
+        await Assert.That(scene.WorldScale).IsGreaterThan(0d);
+    }
+
+    [Test]
     public async Task MapView_registers_a_native_double_tap_zoom_gesture()
     {
         var doubleTap = mapGestureRecognizers(new MapView())
