@@ -8,8 +8,11 @@
 
 MAUI record-slice chrome for [`Novolis.IO.Ndjson`](https://www.nuget.org/packages/Novolis.IO.Ndjson).
 
-`NdjsonSliceView` owns bounded navigation, malformed-record display, expand,
-copy, and incremental refresh. The host owns file picking, Windows
+`NdjsonSliceView` presents the loaded slice as a virtualized, horizontally
+scrollable log table: each JSON object is a row, stable top-level fields become
+columns, and nested values remain compact until the row is expanded. It owns
+bounded navigation, malformed-record display, expand, copy, and incremental
+refresh. The host owns file picking, Windows
 associations, Android content-URI materialization, and document lifetime.
 
 ```csharp

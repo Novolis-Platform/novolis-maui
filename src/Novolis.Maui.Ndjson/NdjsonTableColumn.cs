@@ -15,7 +15,7 @@ public sealed record NdjsonTableColumn(string Name, double Width)
     /// <summary>Creates a readable field column with a bounded width.</summary>
     public static NdjsonTableColumn ForField(string name)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(name);
         var width = name.Length switch
         {
             <= 8 => 160,

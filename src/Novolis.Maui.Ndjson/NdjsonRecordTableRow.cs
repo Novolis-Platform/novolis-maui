@@ -17,8 +17,10 @@ public sealed class NdjsonRecordTableRow : ContentView
         Padding = new Thickness(12, 10),
     };
     private readonly ScrollView _detailsScroller;
+    private readonly Border _detailsBorder;
     private readonly Border _rowBorder;
     private bool _expanded;
+    private bool _themeSubscribed;
 
     /// <summary>Identifies the table row binding.</summary>
     public static readonly BindableProperty RowProperty =
@@ -34,19 +36,20 @@ public sealed class NdjsonRecordTableRow : ContentView
     public NdjsonRecordTableRow()
     {
         AutomationId = "NdjsonRecordRow";
+        _detailsBorder = new Border
+        {
+            Background = new SolidColorBrush(Profile.Background),
+            Stroke = new SolidColorBrush(Profile.Border),
+            StrokeThickness = GraphicalProfileColors.Stroke,
+            StrokeShape = new RoundRectangle { CornerRadius = new CornerRadius(8) },
+            Content = _details,
+        };
         _detailsScroller = new ScrollView
         {
             Orientation = ScrollOrientation.Both,
             HeightRequest = 220,
             IsVisible = false,
-            Content = new Border
-            {
-                Background = new SolidColorBrush(Profile.Background),
-                Stroke = new SolidColorBrush(Profile.Border),
-                StrokeThickness = GraphicalProfileColors.Stroke,
-                StrokeShape = new RoundRectangle { CornerRadius = new CornerRadius(8) },
-                Content = _details,
-            },
+            Content = _detailsBorder,
         };
         _rowBorder = new Border
         {
@@ -65,11 +68,24 @@ public sealed class NdjsonRecordTableRow : ContentView
         set => SetValue(RowProperty, value);
     }
 
+    /// <inheritdoc />
+    protected override void OnParentSet()
+    {
+        base.OnParentSet();
+        if (!_themeSubscribed && Application.Current is { } application)
+        {
+            application.RequestedThemeChanged += OnRequestedThemeChanged;
+            _themeSubscribed = true;
+        }
+    }
+
     /// <summary>Applies the current graphical-profile colors.</summary>
     public void ApplyTheme()
     {
         _rowBorder.Background = new SolidColorBrush(Profile.Raised);
         _rowBorder.Stroke = new SolidColorBrush(Profile.Border);
+        _detailsBorder.Background = new SolidColorBrush(Profile.Background);
+        _detailsBorder.Stroke = new SolidColorBrush(Profile.Border);
         _details.TextColor = Profile.Text;
         if (Row is { } row)
             RenderRow(row, preserveExpanded: _expanded);
@@ -98,18 +114,13 @@ public sealed class NdjsonRecordTableRow : ContentView
         _grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         AddColumn(NdjsonTableColumn.RecordWidth);
         AddColumn(NdjsonTableColumn.StatusWidth);
+        AddColumn(NdjsonTableColumn.ActionsWidth);
         foreach (var column in columns)
             AddColumn(column.Width);
-        AddColumn(NdjsonTableColumn.ActionsWidth);
 
         var columnIndex = 0;
         AddCell(CreateLabel($"#{row.Record.Number:N0}", bold: true), columnIndex++);
         AddCell(CreateLabel(row.Record.Status, bold: true, color: row.Record.IsValid ? Profile.Accent : Profile.Danger), columnIndex++);
-        foreach (var column in columns)
-        {
-            var value = row.ValueFor(column.Name);
-            AddCell(CreateLabel(value, color: value == "—" ? Profile.Muted : Profile.Text), columnIndex++);
-        }
 
         var expand = CreateButton(preserveExpanded ? "Collapse" : "Expand", $"NdjsonExpand{row.Record.Number}");
         expand.Clicked += OnExpandClicked;
@@ -122,7 +133,13 @@ public sealed class NdjsonRecordTableRow : ContentView
             VerticalOptions = LayoutOptions.Center,
             Children = { expand, copy },
         };
-        AddCell(actions, columnIndex);
+        AddCell(actions, columnIndex++);
+
+        foreach (var column in columns)
+        {
+            var value = row.ValueFor(column.Name);
+            AddCell(CreateLabel(value, color: value == "—" ? Profile.Muted : Profile.Text), columnIndex++);
+        }
 
         Grid.SetColumn(_detailsScroller, 0);
         Grid.SetColumnSpan(_detailsScroller, columnIndex + 1);
@@ -199,4 +216,7 @@ public sealed class NdjsonRecordTableRow : ContentView
             return;
         await Clipboard.Default.SetTextAsync(row.Record.CopyText);
     }
+
+    private void OnRequestedThemeChanged(object? sender, AppThemeChangedEventArgs args) =>
+        ApplyTheme();
 }

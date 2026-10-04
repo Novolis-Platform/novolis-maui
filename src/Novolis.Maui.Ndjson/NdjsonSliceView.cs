@@ -538,9 +538,9 @@ public sealed class NdjsonSliceView : ContentView
 
         AddHeaderCell("Record", NdjsonTableColumn.RecordWidth);
         AddHeaderCell("Status", NdjsonTableColumn.StatusWidth);
+        AddHeaderCell("Actions", NdjsonTableColumn.ActionsWidth);
         foreach (var column in _tableColumns)
             AddHeaderCell(column.Name, column.Width);
-        AddHeaderCell("Actions", NdjsonTableColumn.ActionsWidth);
 
         var width = _tableHeader.ColumnDefinitions.Sum(static column => column.Width.Value);
         _tableHeader.WidthRequest = width;
