@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Activation</PackageId>
+    <RootNamespace>Novolis.Maui.Activation</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Generic MAUI file-activation inbox and pending-publish bridge for single-project hosts.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>
