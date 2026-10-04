@@ -11,8 +11,9 @@ namespace Novolis.Maui.PdfViewer;
 /// <summary>One camera over a stacked PDF. Visible pages are layers; pan and pinch move the camera.</summary>
 public sealed class PdfReadingSurface : ContentView
 {
-    private const int LayerCount = 3;
-    private const int CacheLimit = 4;
+    private const int LayerCount = 5;
+    private const int CacheLimit = 8;
+    private const double InertiaStopSpeed = 42;
     private readonly AbsoluteLayout _stage = new()
     {
         BackgroundColor = Profile.Border,
@@ -26,7 +27,7 @@ public sealed class PdfReadingSurface : ContentView
         InputTransparent = true,
     };
     private readonly Image[] _layers = new Image[LayerCount];
-    private readonly int[] _layerPages = [-1, -1, -1];
+    private readonly int[] _layerPages = [-1, -1, -1, -1, -1];
     private readonly CacheKey[] _layerKeys = new CacheKey[LayerCount];
     private readonly Dictionary<CacheKey, ImageSource> _sources = [];
     private readonly Dictionary<CacheKey, string> _androidFiles = [];
@@ -50,6 +51,12 @@ public sealed class PdfReadingSurface : ContentView
     private PointF _tapStart;
     private DateTime _tapDown;
     private DateTime _lastTap;
+    private DateTime _lastMoveAt;
+    private double _velocityX;
+    private double _velocityY;
+    private bool _dragging;
+    private CancellationTokenSource? _inertiaCancellation;
+    private int _renderGeneration;
     private int _pageIndex;
 
     /// <summary>Creates the reading surface.</summary>
@@ -126,6 +133,7 @@ public sealed class PdfReadingSurface : ContentView
         IReadOnlyList<PdfResolvedPage> pages,
         PdfSkiaPageRenderer renderer)
     {
+        StopInertia();
         ClearCache();
         _document = document;
         _pages = pages;
@@ -143,7 +151,7 @@ public sealed class PdfReadingSurface : ContentView
         var mediaDirty = nextRotation != _rotation;
         _paneWidth = System.Math.Max(160, paneWidth);
         _paneHeight = System.Math.Max(160, paneHeight);
-        _zoom = System.Math.Clamp(zoom, 0.5, 4);
+        _zoom = System.Math.Clamp(zoom, PdfZoomLevels.Minimum, PdfZoomLevels.Maximum);
         _fit = fit;
         if (mediaDirty)
         {
@@ -187,9 +195,14 @@ public sealed class PdfReadingSurface : ContentView
 
     /// <summary>Pans the document by DIP in both axes.</summary>
     public void ScrollBy(double deltaX, double deltaY)
+        => ScrollByCore(deltaX, deltaY, rasterize: true);
+
+    private bool ScrollByCore(double deltaX, double deltaY, bool rasterize)
     {
         if (_boxes.Length == 0)
-            return;
+            return false;
+        var oldScrollX = _scrollX;
+        var oldScrollY = _scrollY;
         var density = PdfViewerLayout.Density;
         if (density > 1.2 && System.Math.Abs(deltaY) > ViewportHeight)
             deltaY /= density;
@@ -199,32 +212,45 @@ public sealed class PdfReadingSurface : ContentView
         _scrollX = PdfDocumentStack.PageX(pageWidth, ViewportWidth, _scrollX - deltaX);
         _scrollY = PdfDocumentStack.ClampScroll(_scrollY + deltaY, DocumentHeight, ViewportHeight);
         RaisePage(PdfDocumentStack.PageAt(_boxes, _scrollY));
-        Compose(rasterize: !_pinching);
+        var moved = System.Math.Abs(oldScrollY - _scrollY) > 0.01
+            || System.Math.Abs(oldScrollX - _scrollX) > 0.01;
+        if (moved)
+            Compose(rasterize);
+        return moved;
     }
 
     /// <summary>Zooms, keeping the viewport midpoint stable.</summary>
-    public void SetZoom(double zoom) => ApplyZoom(zoom, ViewportHeight * 0.5, rasterize: true);
+    public void SetZoom(double zoom) => ApplyZoom(
+        zoom,
+        ViewportWidth * 0.5,
+        ViewportHeight * 0.5,
+        rasterize: true);
 
     /// <summary>Applies an incremental pinch factor without re-rasterizing.</summary>
     public void ScaleBy(double factor)
+        => ScaleBy(factor, ViewportWidth * 0.5, ViewportHeight * 0.5);
+
+    /// <summary>Applies an incremental pinch factor around a viewport focus point.</summary>
+    public void ScaleBy(double factor, double focusX, double focusY)
     {
         if (factor <= 0 || !double.IsFinite(factor))
             return;
         _pinching = true;
-        ApplyZoom(_zoom * factor, ViewportHeight * 0.5, rasterize: false);
+        ApplyZoom(_zoom * factor, focusX, focusY, rasterize: false);
     }
 
     /// <summary>Finishes a pinch and paints at the new scale.</summary>
     public void EndScale()
     {
-        ApplyZoom(_zoom, ViewportHeight * 0.5, rasterize: true);
         _pinching = false;
         _pinchSpan = 0;
+        Compose(rasterize: true);
     }
 
     /// <summary>Drops bitmaps and the document.</summary>
     public void Clear()
     {
+        StopInertia();
         ClearCache();
         _document = null;
         _pages = [];
@@ -304,12 +330,16 @@ public sealed class PdfReadingSurface : ContentView
         RaisePage(page);
     }
 
-    private void ApplyZoom(double zoom, double focusY, bool rasterize)
+    private void ApplyZoom(double zoom, double focusX, double focusY, bool rasterize)
     {
-        zoom = System.Math.Clamp(zoom, 0.5, 4);
+        zoom = System.Math.Clamp(zoom, PdfZoomLevels.Minimum, PdfZoomLevels.Maximum);
         if (System.Math.Abs(zoom - _zoom) < 0.001 && !rasterize)
             return;
         var before = _boxes;
+        var beforeScrollX = _scrollX;
+        var focusPage = before.Length == 0
+            ? 0
+            : PdfDocumentStack.PageAt(before, _scrollY + focusY);
         _zoom = zoom;
         var after = PdfDocumentStack.Layout(
             _media,
@@ -326,16 +356,47 @@ public sealed class PdfReadingSurface : ContentView
         if (_boxes.Length > 0)
         {
             var page = System.Math.Clamp(_pageIndex, 0, _boxes.Length - 1);
-            _scrollX = PdfDocumentStack.PageX(_boxes[page].Width, ViewportWidth, (ViewportWidth - _boxes[page].Width) * 0.5);
+            if (focusPage < before.Length && focusPage < after.Length)
+            {
+                var old = before[focusPage];
+                var next = after[focusPage];
+                var oldLeft = PdfDocumentStack.PageX(old.Width, ViewportWidth, beforeScrollX);
+                var fraction = old.Width <= 0
+                    ? 0.5
+                    : System.Math.Clamp((focusX - oldLeft) / old.Width, 0, 1);
+                var desiredLeft = focusX - (fraction * next.Width);
+                _scrollX = PageScrollForLeft(next.Width, ViewportWidth, desiredLeft);
+            }
+            else
+            {
+                _scrollX = PdfDocumentStack.PageX(
+                    _boxes[page].Width,
+                    ViewportWidth,
+                    (ViewportWidth - _boxes[page].Width) * 0.5);
+            }
         }
         RaisePage(PdfDocumentStack.PageAt(_boxes, _scrollY));
         ZoomChanged?.Invoke(this, _zoom);
         Compose(rasterize);
     }
 
+    private static double PageScrollForLeft(double pageWidth, double viewportWidth, double left)
+    {
+        if (pageWidth <= viewportWidth)
+            return 0;
+        return System.Math.Clamp(left, viewportWidth - pageWidth, 0);
+    }
+
     private void Compose(bool rasterize)
     {
-        var visible = PdfDocumentStack.Visible(_boxes, _scrollY, ViewportHeight).Take(LayerCount).ToArray();
+        var visible = PdfDocumentStack.Visible(_boxes, _scrollY, ViewportHeight).ToArray();
+        if (visible.Length > 0)
+        {
+            var first = System.Math.Max(0, visible[0].Index - 1);
+            var last = System.Math.Min(_boxes.Length - 1, visible[^1].Index + 1);
+            visible = _boxes[first..(last + 1)];
+        }
+        visible = visible.Take(LayerCount).ToArray();
         var assigned = new bool[LayerCount];
         foreach (var box in visible)
         {
@@ -438,6 +499,7 @@ public sealed class PdfReadingSurface : ContentView
         var document = _document;
         var page = _pages[key.Page];
         var renderer = _renderer;
+        var generation = _renderGeneration;
         var width = key.Width;
         var height = System.Math.Max(1, (int)System.Math.Round(box.Height / System.Math.Max(1, box.Width) * width));
         height = System.Math.Min(height, PdfViewerLayout.MaxRasterEdge);
@@ -449,9 +511,15 @@ public sealed class PdfReadingSurface : ContentView
                 try
                 {
                     var rendered = renderer.RenderScaled(document, page, width, height, key.Rotation);
-                    var source = CreateSource(key, rendered.PngBytes);
+                    var source = CreateSource(key, rendered.PngBytes, generation);
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
+                        if (generation != _renderGeneration || !ReferenceEquals(document, _document))
+                        {
+                            lock (_pending)
+                                _pending.Remove(key);
+                            return;
+                        }
                         Store(key, source);
                         Compose(rasterize: false);
                     });
@@ -469,7 +537,7 @@ public sealed class PdfReadingSurface : ContentView
         });
     }
 
-    private ImageSource CreateSource(CacheKey key, byte[] png)
+    private ImageSource CreateSource(CacheKey key, byte[] png, int generation)
     {
         if (OperatingSystem.IsAndroid())
         {
@@ -477,7 +545,9 @@ public sealed class PdfReadingSurface : ContentView
             if (string.IsNullOrWhiteSpace(cacheRoot))
                 cacheRoot = Path.GetTempPath();
             Directory.CreateDirectory(cacheRoot);
-            var path = Path.Combine(cacheRoot, $"novolis-pdf-page-{key.Page}-{key.Width}-{key.Rotation}.png");
+            var path = Path.Combine(
+                cacheRoot,
+                $"novolis-pdf-page-g{generation}-{key.Page}-{key.Width}-{key.Rotation}.png");
             File.WriteAllBytes(path, png);
             _androidFiles[key] = path;
             return new FileImageSource { File = path };
@@ -520,10 +590,14 @@ public sealed class PdfReadingSurface : ContentView
 
     private void OnTouchStart(object? sender, TouchEventArgs args)
     {
+        StopInertia();
         var touches = args.Touches;
         if (touches.Length >= 2)
         {
             _pinching = true;
+            _dragging = false;
+            _velocityX = 0;
+            _velocityY = 0;
             _pinchSpan = Span(touches);
             return;
         }
@@ -533,6 +607,10 @@ public sealed class PdfReadingSurface : ContentView
             _lastPoint = touches[0];
             _tapStart = touches[0];
             _tapDown = DateTime.UtcNow;
+            _lastMoveAt = _tapDown;
+            _velocityX = 0;
+            _velocityY = 0;
+            _dragging = true;
         }
     }
 
@@ -543,7 +621,10 @@ public sealed class PdfReadingSurface : ContentView
         {
             var span = Span(touches);
             if (_pinchSpan > 8 && span > 8)
-                ScaleBy(span / _pinchSpan);
+            {
+                var focus = Midpoint(touches);
+                ScaleBy(span / _pinchSpan, focus.X, focus.Y);
+            }
             _pinchSpan = span;
             _pinching = true;
             return;
@@ -553,8 +634,17 @@ public sealed class PdfReadingSurface : ContentView
             return;
 
         var point = touches[0];
-        ScrollBy(_lastPoint.X - point.X, _lastPoint.Y - point.Y);
+        var now = DateTime.UtcNow;
+        var elapsed = System.Math.Max(0.008, (now - _lastMoveAt).TotalSeconds);
+        var deltaX = _lastPoint.X - point.X;
+        var deltaY = _lastPoint.Y - point.Y;
+        ScrollByCore(deltaX, deltaY, rasterize: false);
+        var sampleX = deltaX / elapsed;
+        var sampleY = deltaY / elapsed;
+        _velocityX = (_velocityX * 0.65) + (sampleX * 0.35);
+        _velocityY = (_velocityY * 0.65) + (sampleY * 0.35);
         _lastPoint = point;
+        _lastMoveAt = now;
     }
 
     private void OnTouchEnd(object? sender, TouchEventArgs args)
@@ -562,23 +652,37 @@ public sealed class PdfReadingSurface : ContentView
         if (_pinching)
         {
             EndScale();
+            _dragging = false;
             return;
         }
 
         var touches = args.Touches;
-        if (touches.Length != 1)
+        if (!_dragging)
             return;
 
-        var point = touches[0];
+        var point = touches.Length == 1 ? touches[0] : _lastPoint;
         var moved = Distance(point, _tapStart);
         var held = DateTime.UtcNow - _tapDown;
-        if (moved > 16 || held > TimeSpan.FromMilliseconds(400))
+        _dragging = false;
+        if (moved > 16)
+        {
+            if (System.Math.Sqrt((_velocityX * _velocityX) + (_velocityY * _velocityY)) > 80)
+                StartInertia(_velocityX, _velocityY);
+            Compose(rasterize: true);
+            return;
+        }
+
+        if (held > TimeSpan.FromMilliseconds(400))
             return;
 
         var now = DateTime.UtcNow;
         if (now - _lastTap < TimeSpan.FromMilliseconds(350))
         {
-            ApplyZoom(_zoom < 1.75 ? 2.5 : 1, ViewportHeight * 0.5, rasterize: true);
+            ApplyZoom(
+                _zoom < 1.75 ? 2.5 : 1,
+                point.X,
+                point.Y,
+                rasterize: true);
             _lastTap = DateTime.MinValue;
             return;
         }
@@ -590,6 +694,76 @@ public sealed class PdfReadingSurface : ContentView
     {
         if (_pinching)
             EndScale();
+        _dragging = false;
+    }
+
+    private void StartInertia(double velocityX, double velocityY)
+    {
+        StopInertia();
+        var cancellation = new CancellationTokenSource();
+        _inertiaCancellation = cancellation;
+        _ = RunInertiaAsync(velocityX, velocityY, cancellation);
+    }
+
+    private async Task RunInertiaAsync(
+        double velocityX,
+        double velocityY,
+        CancellationTokenSource cancellation)
+    {
+        var token = cancellation.Token;
+        var previous = DateTime.UtcNow;
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(16, token).ConfigureAwait(false);
+                var now = DateTime.UtcNow;
+                var elapsed = System.Math.Clamp((now - previous).TotalSeconds, 0.008, 0.05);
+                previous = now;
+                var moved = await MainThread.InvokeOnMainThreadAsync(
+                        () => ScrollByCore(
+                            velocityX * elapsed,
+                            velocityY * elapsed,
+                            rasterize: false))
+                    .ConfigureAwait(false);
+                if (!moved)
+                    break;
+
+                var friction = System.Math.Exp(-5.2 * elapsed);
+                velocityX *= friction;
+                velocityY *= friction;
+                if (System.Math.Sqrt((velocityX * velocityX) + (velocityY * velocityY)) < InertiaStopSpeed)
+                    break;
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            try
+            {
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    if (!ReferenceEquals(_inertiaCancellation, cancellation))
+                        return;
+                    _inertiaCancellation = null;
+                    Compose(rasterize: true);
+                }).ConfigureAwait(false);
+            }
+            finally
+            {
+                cancellation.Dispose();
+            }
+        }
+    }
+
+    private void StopInertia()
+    {
+        if (_inertiaCancellation is not { } cancellation)
+            return;
+        _inertiaCancellation = null;
+        cancellation.Cancel();
     }
 
     private static float Span(PointF[] touches)
@@ -600,6 +774,13 @@ public sealed class PdfReadingSurface : ContentView
         var dy = touches[0].Y - touches[1].Y;
         return MathF.Sqrt((dx * dx) + (dy * dy));
     }
+
+    private static PointF Midpoint(PointF[] touches) =>
+        touches.Length < 2
+            ? touches.FirstOrDefault()
+            : new PointF(
+                (touches[0].X + touches[1].X) / 2,
+                (touches[0].Y + touches[1].Y) / 2);
 
     private static float Distance(PointF a, PointF b)
     {
@@ -618,6 +799,7 @@ public sealed class PdfReadingSurface : ContentView
 
     private void ClearCache()
     {
+        _renderGeneration++;
         _sources.Clear();
         foreach (var path in _androidFiles.Values)
             _ = DeleteLaterAsync(path);

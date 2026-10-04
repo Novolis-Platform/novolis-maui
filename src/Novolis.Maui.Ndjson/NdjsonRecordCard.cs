@@ -203,9 +203,9 @@ public sealed class NdjsonRecordCard : ContentView
         _expandButton.Text = _expanded ? "Collapse" : "Expand";
     }
 
-    private static async void OnCopyClicked(object? sender, EventArgs args)
+    private async void OnCopyClicked(object? sender, EventArgs args)
     {
-        if (sender is not Button { BindingContext: NdjsonRecordDisplay record })
+        if (Record is not { } record)
             return;
 
         await Clipboard.Default.SetTextAsync(record.CopyText);

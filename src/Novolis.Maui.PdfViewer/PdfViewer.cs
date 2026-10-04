@@ -369,7 +369,7 @@ public sealed class PdfViewer : ContentView
             return false;
         if (control)
         {
-            _ = SetZoomAsync(_zoom + (delta > 0 ? 0.25 : -0.25));
+            _ = SetZoomAsync(PdfZoomLevels.Step(_zoom, delta > 0 ? 1 : -1));
             return true;
         }
 
@@ -464,7 +464,7 @@ public sealed class PdfViewer : ContentView
                     is { } position)
                 {
                     _pageIndex = System.Math.Clamp(position.PageIndex, 0, System.Math.Max(0, _pages.Count - 1));
-                    _zoom = System.Math.Clamp(position.Zoom, 0.5, 4);
+                    _zoom = System.Math.Clamp(position.Zoom, PdfZoomLevels.Minimum, PdfZoomLevels.Maximum);
                     _rotation = NormalizeRotation(position.Rotation);
                 }
             }
@@ -546,10 +546,10 @@ public sealed class PdfViewer : ContentView
     public Task GoPreviousAsync() => GoToPageAsync(_pageIndex - 1);
 
     /// <summary>Increases the page scale.</summary>
-    public Task ZoomInAsync() => SetZoomAsync(_zoom + 0.25);
+    public Task ZoomInAsync() => SetZoomAsync(PdfZoomLevels.Step(_zoom, 1));
 
     /// <summary>Decreases the page scale.</summary>
-    public Task ZoomOutAsync() => SetZoomAsync(_zoom - 0.25);
+    public Task ZoomOutAsync() => SetZoomAsync(PdfZoomLevels.Step(_zoom, -1));
 
     /// <summary>Fits the current page entirely inside the reading pane.</summary>
     public Task FitAsync()
@@ -570,7 +570,7 @@ public sealed class PdfViewer : ContentView
     /// <summary>Sets a bounded page scale relative to Fit.</summary>
     public async Task SetZoomAsync(double zoom, CancellationToken cancellationToken = default)
     {
-        _zoom = System.Math.Clamp(zoom, 0.5, 4);
+        _zoom = System.Math.Clamp(zoom, PdfZoomLevels.Minimum, PdfZoomLevels.Maximum);
         await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 _readingSurface.SetZoom(_zoom);
@@ -741,8 +741,9 @@ public sealed class PdfViewer : ContentView
         _viewerHeader.IsVisible = !compact;
         _openButton.IsVisible = compact;
         _pagesTabButton.IsVisible = !compact;
-        _zoomOutButton.IsVisible = !compact;
-        _zoomInButton.IsVisible = !compact;
+        _zoomOutButton.IsVisible = true;
+        _zoomInButton.IsVisible = true;
+        _zoomLabel.IsVisible = true;
         _searchBar.IsVisible = !compact;
         _pageEntry.IsVisible = !compact;
         _searchStatus.IsVisible = !compact;
@@ -778,6 +779,7 @@ public sealed class PdfViewer : ContentView
             }
         }
         _pageLabel.FontSize = compact ? 13 : GraphicalProfileColors.NavigationSize;
+        _zoomLabel.FontSize = compact ? 12 : GraphicalProfileColors.NavigationSize;
         _workspace.Padding = compact ? new Thickness(0) : new Thickness(8, 0, 8, 8);
         _workspace.ColumnSpacing = compact ? 0 : 8;
         if (compact)
@@ -865,7 +867,10 @@ public sealed class PdfViewer : ContentView
             _compactBar.Add(_previousButton, 2, 0);
             _compactBar.Add(_pageLabel, 3, 0);
             _compactBar.Add(_nextButton, 4, 0);
-            _compactBar.Add(_fitButton, 5, 0);
+            _compactBar.Add(_zoomOutButton, 5, 0);
+            _compactBar.Add(_zoomLabel, 6, 0);
+            _compactBar.Add(_zoomInButton, 7, 0);
+            _compactBar.Add(_fitButton, 8, 0);
             return;
         }
 
@@ -882,6 +887,7 @@ public sealed class PdfViewer : ContentView
         _toolbar.Children.Add(_fitWidthButton);
         _toolbar.Children.Add(_rotateButton);
         _toolbar.Children.Add(_pageLabel);
+        _toolbar.Children.Add(_zoomLabel);
         _toolbar.Children.Add(_pageEntry);
         _toolbar.Children.Add(_searchBar);
         _toolbar.Children.Add(_searchStatus);
@@ -1128,7 +1134,7 @@ public sealed class PdfViewer : ContentView
 
     private void OnSurfaceZoomChanged(object? sender, double zoom)
     {
-        var next = System.Math.Clamp(zoom, 0.5, 4);
+        var next = System.Math.Clamp(zoom, PdfZoomLevels.Minimum, PdfZoomLevels.Maximum);
         if (System.Math.Abs(next - _zoom) < 0.001)
             return;
         _zoom = next;
@@ -1147,6 +1153,8 @@ public sealed class PdfViewer : ContentView
             _compactBar.BackgroundColor = Profile.Surface;
         _pageLabel.TextColor = Profile.Text;
         _pageLabel.BackgroundColor = Colors.Transparent;
+        _zoomLabel.TextColor = Profile.Text;
+        _zoomLabel.BackgroundColor = Colors.Transparent;
         _pageRail.BackgroundColor = Profile.Surface;
         _outlineList.BackgroundColor = Profile.Surface;
         _sidebar.BackgroundColor = Profile.Surface;
@@ -1266,14 +1274,15 @@ public sealed class PdfViewer : ContentView
         _openButton.IsEnabled = !_isBusy;
         _previousButton.IsEnabled = enabled && _pageIndex > 0;
         _nextButton.IsEnabled = enabled && _pageIndex < _pages.Count - 1;
-        _zoomOutButton.IsEnabled = enabled && _zoom > 0.5;
-        _zoomInButton.IsEnabled = enabled && _zoom < 4;
+        _zoomOutButton.IsEnabled = enabled && _zoom > PdfZoomLevels.Minimum;
+        _zoomInButton.IsEnabled = enabled && _zoom < PdfZoomLevels.Maximum;
         _fitButton.IsEnabled = enabled;
         _fitWidthButton.IsEnabled = enabled;
         _pagesTabButton.IsEnabled = enabled;
         _outlineTabButton.IsEnabled = enabled;
         _rotateButton.IsEnabled = enabled;
         _pageLabel.Text = $"{(_pages.Count == 0 ? 0 : _pageIndex + 1)} / {_pages.Count}";
+        _zoomLabel.Text = PdfZoomLevels.Percent(_zoom);
         ShowEmptyHint();
         ApplyNavButtonTheme();
         StyleNavButton(_fitButton, _fitKind == PdfFitKind.Page);
