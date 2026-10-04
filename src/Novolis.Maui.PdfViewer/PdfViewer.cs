@@ -35,6 +35,7 @@ public sealed class PdfViewer : ContentView
     private readonly Button _rotateButton;
     private readonly SemaphoreSlim _renderGate = new(1, 1);
     private readonly Label _pageLabel;
+    private readonly Label _zoomLabel;
     private readonly Entry _pageEntry;
     private readonly SearchBar _searchBar;
     private readonly Label _searchStatus;
@@ -95,6 +96,9 @@ public sealed class PdfViewer : ContentView
         _pageLabel.HorizontalTextAlignment = TextAlignment.Center;
         _pageLabel.HorizontalOptions = LayoutOptions.Center;
         _pageLabel.WidthRequest = 80;
+        _zoomLabel = CreateLabel(PdfZoomLevels.Percent(_zoom), "PdfZoomLabel");
+        _zoomLabel.HorizontalTextAlignment = TextAlignment.Center;
+        _zoomLabel.WidthRequest = 56;
         _pageEntry = new Entry
         {
             AutomationId = "PdfPageEntry",
@@ -241,6 +245,7 @@ public sealed class PdfViewer : ContentView
                 _fitWidthButton,
                 _rotateButton,
                 _pageLabel,
+                _zoomLabel,
                 _pageEntry,
                 _searchBar,
                 _searchStatus,
@@ -258,6 +263,9 @@ public sealed class PdfViewer : ContentView
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
             },

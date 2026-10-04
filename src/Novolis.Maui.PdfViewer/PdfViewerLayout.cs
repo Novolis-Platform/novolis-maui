@@ -9,7 +9,7 @@ public static class PdfViewerLayout
     public const double CompactBreakpoint = 800;
 
     /// <summary>Longest raster edge. Stops a rotate or pinch from allocating a phone-killing bitmap.</summary>
-    public const int MaxRasterEdge = 2560;
+    public const int MaxRasterEdge = 4096;
 
     /// <summary>True when the device should use wrapped phone chrome.</summary>
     public static bool IsCompact(double viewWidth = 0)

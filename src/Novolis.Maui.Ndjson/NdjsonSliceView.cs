@@ -1,5 +1,4 @@
 using System.Globalization;
-using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Controls.Shapes;
 using Novolis.IO.Ndjson;
 using Novolis.Maui.GraphicalProfile;
@@ -8,35 +7,43 @@ using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
 namespace Novolis.Maui.Ndjson;
 
 /// <summary>
-/// Bounded MAUI presentation for one <see cref="INdjsonDocument"/>.
+/// Bounded, virtualized MAUI presentation for one <see cref="INdjsonDocument"/>.
 /// The host remains responsible for selecting and materializing files.
 /// </summary>
 public sealed class NdjsonSliceView : ContentView
 {
     private readonly Label _documentMeta;
     private readonly Label _rangeLabel;
+    private readonly Label _sliceSummary;
     private readonly Label _emptyLabel;
+    private readonly Label _filterStatus;
+    private readonly SearchBar _filterBar;
     private readonly Button _refreshButton;
     private readonly Button _previousButton;
     private readonly Button _nextButton;
     private readonly Button _jumpButton;
     private readonly Entry _jumpEntry;
     private readonly Picker _takePicker;
-    private readonly VerticalStackLayout _records;
+    private readonly CollectionView _records;
     private readonly Border _card;
     private ViewerState _state = new(0, 100, null, false, null);
     private INdjsonDocument? _document;
+    private IReadOnlyList<NdjsonRecordDisplay> _sliceRecords = [];
+    private string _displayName = "NDJSON document";
     private bool _themeSubscribed;
 
     /// <summary>Creates the record-slice view.</summary>
     public NdjsonSliceView()
     {
+        AutomationId = "NdjsonSliceView";
         _documentMeta = new Label
         {
             AutomationId = "NdjsonDocumentMeta",
             Text = "No document open",
             FontFamily = Profile.FontFamily,
             FontSize = 12,
+            LineBreakMode = LineBreakMode.TailTruncation,
+            MaxLines = 1,
         };
         _rangeLabel = new Label
         {
@@ -44,25 +51,37 @@ public sealed class NdjsonSliceView : ContentView
             Text = "No records",
             HorizontalTextAlignment = TextAlignment.Center,
             VerticalTextAlignment = TextAlignment.Center,
+            FontAttributes = FontAttributes.Bold,
+            FontSize = 15,
+        };
+        _sliceSummary = new Label
+        {
+            AutomationId = "NdjsonSliceSummary",
+            Text = "Open an NDJSON file to inspect its records.",
+            HorizontalTextAlignment = TextAlignment.Center,
+            FontSize = 12,
         };
         _emptyLabel = new Label
         {
+            AutomationId = "NdjsonEmpty",
             Text = "Open an NDJSON file to inspect its records.",
             FontSize = 15,
             HorizontalTextAlignment = TextAlignment.Center,
             VerticalTextAlignment = TextAlignment.Center,
+            Margin = new Thickness(18),
         };
 
         _refreshButton = CreateButton("Refresh", "NdjsonRefresh", RefreshAsync);
         _previousButton = CreateButton("Previous", "NdjsonPrevious", PreviousAsync);
         _nextButton = CreateButton("Next", "NdjsonNext", NextAsync);
-        _jumpButton = CreateButton("Jump", "NdjsonJump", JumpAsync);
+        _jumpButton = CreateButton("Go", "NdjsonJump", JumpAsync);
         _jumpEntry = new Entry
         {
             AutomationId = "NdjsonJumpEntry",
             Placeholder = "Record number",
             Keyboard = Keyboard.Numeric,
             HorizontalOptions = LayoutOptions.Fill,
+            MinimumHeightRequest = GraphicalProfileColors.TouchTarget,
         };
         _takePicker = new Picker
         {
@@ -71,83 +90,155 @@ public sealed class NdjsonSliceView : ContentView
             ItemsSource = new[] { "50", "100", "250", "500", "1000" },
             SelectedItem = "100",
             HorizontalOptions = LayoutOptions.Fill,
+            MinimumHeightRequest = GraphicalProfileColors.TouchTarget,
         };
         _takePicker.SelectedIndexChanged += async (_, _) => await ChangeTakeAsync();
+        _filterBar = new SearchBar
+        {
+            AutomationId = "NdjsonFilter",
+            Placeholder = "Filter loaded records",
+            HorizontalOptions = LayoutOptions.Fill,
+            MinimumHeightRequest = GraphicalProfileColors.TouchTarget,
+        };
+        _filterBar.TextChanged += (_, _) => RenderFilteredRecords();
+        _filterStatus = new Label
+        {
+            AutomationId = "NdjsonFilterStatus",
+            FontSize = 12,
+            VerticalTextAlignment = TextAlignment.Center,
+            HorizontalTextAlignment = TextAlignment.End,
+        };
 
-        _records = new VerticalStackLayout
+        _records = new CollectionView
         {
             AutomationId = "NdjsonRecords",
-            Spacing = 8,
-            Padding = new Thickness(12, 4, 12, 16),
-        };
-
-        var navigation = new Grid
-        {
-            ColumnDefinitions =
+            SelectionMode = SelectionMode.None,
+            ItemSizingStrategy = ItemSizingStrategy.MeasureAllItems,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Always,
+            ItemsLayout = new LinearItemsLayout(ItemsLayoutOrientation.Vertical)
             {
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto),
+                ItemSpacing = 10,
             },
-            ColumnSpacing = 8,
-        };
-        navigation.Add(_previousButton, 0, 0);
-        navigation.Add(_rangeLabel, 1, 0);
-        navigation.Add(_nextButton, 2, 0);
-
-        var controls = new Grid
-        {
-            ColumnDefinitions =
+            EmptyView = _emptyLabel,
+            ItemTemplate = new DataTemplate(() =>
             {
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(new GridLength(1, GridUnitType.Star)),
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(new GridLength(1.2, GridUnitType.Star)),
-                new ColumnDefinition(GridLength.Auto),
-            },
-            ColumnSpacing = 8,
+                var card = new NdjsonRecordCard
+                {
+                    HorizontalOptions = LayoutOptions.Fill,
+                    Margin = new Thickness(12, 0),
+                };
+                card.SetBinding(NdjsonRecordCard.RecordProperty, ".");
+                return card;
+            }),
         };
-        controls.Add(new Label
-        {
-            Text = "Records per slice",
-            VerticalTextAlignment = TextAlignment.Center,
-        }, 0, 0);
-        controls.Add(_takePicker, 1, 0);
-        controls.Add(_jumpEntry, 2, 0);
-        controls.Add(_jumpButton, 3, 0);
-        controls.Add(_refreshButton, 4, 0);
 
-        var viewerLayout = new Grid
+        var heading = new Grid
         {
-            Padding = new Thickness(12, 12, 12, 0),
+            Padding = new Thickness(16, 14, 16, 0),
             RowDefinitions =
             {
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Star),
-                new RowDefinition(GridLength.Star),
             },
-            RowSpacing = 10,
         };
-        viewerLayout.Add(new Label
+        heading.Add(new Label
         {
             Text = "RECORDS",
             FontAttributes = FontAttributes.Bold,
             FontSize = 10,
             CharacterSpacing = 1.4,
         }, 0, 0);
-        viewerLayout.Add(_documentMeta, 0, 1);
-        viewerLayout.Add(navigation, 0, 2);
-        viewerLayout.Add(controls, 0, 3);
-        viewerLayout.Add(new ScrollView
+        heading.Add(_documentMeta, 0, 1);
+
+        var filterRow = new Grid
         {
-            AutomationId = "NdjsonRecordScroll",
-            Content = _records,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Always,
-        }, 0, 4);
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto),
+            },
+            ColumnSpacing = 8,
+        };
+        filterRow.Add(_filterBar, 0, 0);
+        filterRow.Add(_refreshButton, 1, 0);
+
+        var navigation = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(new GridLength(1, GridUnitType.Star)),
+                new ColumnDefinition(new GridLength(1.4, GridUnitType.Star)),
+                new ColumnDefinition(new GridLength(1, GridUnitType.Star)),
+            },
+            ColumnSpacing = 8,
+        };
+        navigation.Add(_previousButton, 0, 0);
+        navigation.Add(new VerticalStackLayout
+        {
+            Spacing = 2,
+            HorizontalOptions = LayoutOptions.Fill,
+            Children = { _rangeLabel, _sliceSummary },
+        }, 1, 0);
+        navigation.Add(_nextButton, 2, 0);
+
+        var jumpRow = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto),
+            },
+            ColumnSpacing = 8,
+        };
+        jumpRow.Add(_jumpEntry, 0, 0);
+        jumpRow.Add(_jumpButton, 1, 0);
+
+        var pageSizeRow = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
+            },
+            ColumnSpacing = 8,
+        };
+        pageSizeRow.Add(new Label
+        {
+            Text = "Records per slice",
+            VerticalTextAlignment = TextAlignment.Center,
+            FontSize = 12,
+        }, 0, 0);
+        pageSizeRow.Add(_takePicker, 1, 0);
+        pageSizeRow.Add(_filterStatus, 2, 0);
+
+        var controls = new VerticalStackLayout
+        {
+            Spacing = 10,
+            Padding = new Thickness(12, 12, 12, 10),
+            Children =
+            {
+                filterRow,
+                navigation,
+                jumpRow,
+                pageSizeRow,
+            },
+        };
+        var viewerLayout = new Grid
+        {
+            RowDefinitions =
+            {
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Star),
+            },
+            RowSpacing = 0,
+        };
+        viewerLayout.Add(heading, 0, 0);
+        viewerLayout.Add(controls, 0, 1);
+        viewerLayout.Add(_records, 0, 2);
         _card = CreateCard(viewerLayout);
-        _card.Padding = new Thickness(0);
+        _card.Padding = new Thickness(0, 0, 0, 10);
         Content = _card;
 
         _previousButton.IsEnabled = false;
@@ -175,10 +266,12 @@ public sealed class NdjsonSliceView : ContentView
     {
         ArgumentNullException.ThrowIfNull(document);
         _document = document;
-        _state = _state with { Skip = 0, Slice = null, Error = null };
-        _documentMeta.Text = displayName is null
-            ? "Loading..."
+        _displayName = string.IsNullOrWhiteSpace(displayName)
+            ? document.File.Name
             : displayName;
+        _filterBar.Text = string.Empty;
+        _state = _state with { Skip = 0, Slice = null, Error = null };
+        _documentMeta.Text = _displayName;
         SetBusy(true);
         try
         {
@@ -201,7 +294,9 @@ public sealed class NdjsonSliceView : ContentView
         BackgroundColor = Profile.Background;
         _documentMeta.TextColor = Profile.Muted;
         _rangeLabel.TextColor = Profile.Text;
+        _sliceSummary.TextColor = Profile.Muted;
         _emptyLabel.TextColor = Profile.Muted;
+        _filterStatus.TextColor = Profile.Muted;
         _card.Background = new SolidColorBrush(Profile.Surface);
         _card.Stroke = new SolidColorBrush(Profile.Border);
         _refreshButton.BackgroundColor = Profile.ActionSoft;
@@ -216,6 +311,8 @@ public sealed class NdjsonSliceView : ContentView
         _jumpEntry.BackgroundColor = Profile.Raised;
         _takePicker.TextColor = Profile.Text;
         _takePicker.BackgroundColor = Profile.Raised;
+        _filterBar.TextColor = Profile.Text;
+        _filterBar.BackgroundColor = Profile.Raised;
     }
 
     /// <inheritdoc />
@@ -339,110 +436,46 @@ public sealed class NdjsonSliceView : ContentView
     private void RenderSlice(INdjsonDocument document)
     {
         var slice = _state.Slice;
-        _records.Children.Clear();
+        _sliceRecords = slice?.Records.Select(static record => new NdjsonRecordDisplay(record)).ToArray() ?? [];
         if (slice is null || slice.Records.Count == 0)
         {
-            _emptyLabel.IsVisible = true;
-            _records.Children.Add(_emptyLabel);
+            _emptyLabel.Text = "This slice has no records.";
+            _rangeLabel.Text = "No records";
+            _sliceSummary.Text = "Try another slice or refresh the file.";
         }
         else
         {
-            _emptyLabel.IsVisible = false;
-            foreach (var record in slice.Records)
-                _records.Children.Add(CreateRecordView(new NdjsonRecordDisplay(record)));
+            var first = slice.Records[0];
+            var last = slice.Records[^1];
+            _emptyLabel.Text = "No records match this filter.";
+            _rangeLabel.Text = $"{first.Number:N0} – {last.Number:N0}";
+            _sliceSummary.Text = $"Showing {slice.Records.Count:N0} loaded records";
         }
 
-        var first = slice?.Records.FirstOrDefault();
-        var last = slice?.Records.LastOrDefault();
-        _rangeLabel.Text = first is null || last is null
-            ? $"{_state.Skip:N0} · no records"
-            : $"{first.Number:N0} – {last.Number:N0}";
         document.File.Refresh();
-        _documentMeta.Text = $"{FormatBytes(document.File.Length)} · {document.RecordCount:N0}"
-            + (slice?.HasMore is true ? "+" : string.Empty)
-            + " complete records";
+        var recordSuffix = slice?.HasMore is true ? "+" : string.Empty;
+        _documentMeta.Text = $"{_displayName} · {FormatBytes(document.File.Length)} · {document.RecordCount:N0}{recordSuffix} records";
+        RenderFilteredRecords();
         _previousButton.IsEnabled = slice?.HasPrevious is true;
         _nextButton.IsEnabled = slice?.HasMore is true;
         ApplyTheme();
     }
 
-    private View CreateRecordView(NdjsonRecordDisplay record)
+    private void RenderFilteredRecords()
     {
-        var details = new Editor
-        {
-            IsReadOnly = true,
-            IsVisible = false,
-            FontFamily = "Consolas",
-            FontSize = 12,
-            AutoSize = EditorAutoSizeOption.TextChanges,
-            MaximumHeightRequest = 280,
-        };
-        Button? expand = null;
-        expand = CreateButton("Expand", $"NdjsonExpand{record.Number}", async () =>
-        {
-            if (!details.IsVisible)
-                details.Text = await Task.Run(() => record.Details);
-
-            details.IsVisible = !details.IsVisible;
-            expand!.Text = details.IsVisible ? "Collapse" : "Expand";
-        });
-        var copy = CreateButton("Copy", $"NdjsonCopy{record.Number}", async () =>
-        {
-            await Clipboard.Default.SetTextAsync(record.CopyText);
-        });
-        expand.Padding = new Thickness(10, 5);
-        copy.Padding = new Thickness(10, 5);
-        var actions = new HorizontalStackLayout
-        {
-            Spacing = 6,
-            Children = { expand, copy },
-        };
-        var header = new Grid
-        {
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto),
-            },
-            ColumnSpacing = 8,
-        };
-        header.Add(new Label
-        {
-            Text = record.Number.ToString("N0", CultureInfo.InvariantCulture),
-            FontFamily = "Consolas",
-            FontAttributes = FontAttributes.Bold,
-            VerticalTextAlignment = TextAlignment.Center,
-        }, 0, 0);
-        header.Add(new Label
-        {
-            Text = record.Status,
-            FontAttributes = FontAttributes.Bold,
-            FontSize = 11,
-            TextColor = Profile.Accent,
-            VerticalTextAlignment = TextAlignment.Center,
-        }, 1, 0);
-        header.Add(actions, 2, 0);
-
-        var content = new VerticalStackLayout
-        {
-            Spacing = 7,
-            Children =
-            {
-                header,
-                new Label
-                {
-                    Text = record.Preview,
-                    FontFamily = "Consolas",
-                    FontSize = 12,
-                    LineBreakMode = LineBreakMode.WordWrap,
-                },
-                details,
-            },
-        };
-        var border = CreateCard(content);
-        border.Padding = new Thickness(12, 10);
-        return border;
+        var query = _filterBar.Text?.Trim();
+        var visible = string.IsNullOrWhiteSpace(query)
+            ? _sliceRecords
+            : _sliceRecords
+                .Where(record => record.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        _records.ItemsSource = visible;
+        _filterStatus.Text = string.IsNullOrWhiteSpace(query)
+            ? $"{_sliceRecords.Count:N0} loaded"
+            : $"{visible.Count:N0} match{(visible.Count == 1 ? string.Empty : "es")}";
+        _emptyLabel.Text = _sliceRecords.Count == 0
+            ? "This slice has no records."
+            : "No records match this filter.";
     }
 
     private async Task ReportErrorAsync(string title, Exception error)
@@ -457,7 +490,9 @@ public sealed class NdjsonSliceView : ContentView
         _previousButton.IsEnabled = !isBusy && _state.Slice?.HasPrevious is true;
         _nextButton.IsEnabled = !isBusy && _state.Slice?.HasMore is true;
         _jumpButton.IsEnabled = !isBusy;
+        _jumpEntry.IsEnabled = !isBusy;
         _takePicker.IsEnabled = !isBusy;
+        _filterBar.IsEnabled = !isBusy;
     }
 
     private void OnRequestedThemeChanged(object? sender, AppThemeChangedEventArgs args) =>
@@ -510,5 +545,4 @@ public sealed class NdjsonSliceView : ContentView
             StrokeShape = new RoundRectangle { CornerRadius = new CornerRadius(GraphicalProfileColors.CardRadius) },
             Content = content,
         };
-
 }

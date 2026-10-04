@@ -46,6 +46,13 @@ public sealed class NdjsonRecordDisplay
     /// <summary>Text copied to the system clipboard.</summary>
     public string CopyText { get; }
 
+    /// <summary>Text used by the bounded, current-slice filter.</summary>
+    public string SearchText => CopyText;
+
+    /// <summary>Approximate UTF-8 byte size of the source record.</summary>
+    public int ByteLength =>
+        System.Text.Encoding.UTF8.GetByteCount(CopyText);
+
     private string? _details;
 
     private static string CreatePreview(NdjsonRecord record)
@@ -53,7 +60,7 @@ public sealed class NdjsonRecordDisplay
         var text = record.Json is { } json
             ? json.GetRawText()
             : record.Raw ?? string.Empty;
-        return text.Length <= 4_096 ? text : $"{text[..4_096]}…";
+        return text.Length <= 640 ? text : $"{text[..640]}…";
     }
 
     private static string CreateDetails(NdjsonRecord record)
