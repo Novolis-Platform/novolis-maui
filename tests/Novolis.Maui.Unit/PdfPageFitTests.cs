@@ -77,4 +77,5 @@ public sealed class PdfPageFitTests
         var size = PdfPageFit.DisplaySize(2640, 1080, 432, 648, 1, PdfFitKind.Width, maxEdge: 853);
         await Assert.That(System.Math.Max(size.Width, size.Height)).IsLessThanOrEqualTo(853);
     }
+
 }

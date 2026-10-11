@@ -256,17 +256,19 @@ public sealed class PdfViewer : ContentView
             BackgroundColor = Profile.Surface,
             Padding = new Thickness(6, 4),
             ColumnSpacing = 4,
+            RowSpacing = 2,
             IsVisible = false,
+            RowDefinitions =
+            {
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
+            },
             ColumnDefinitions =
             {
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
             },
         };
@@ -867,10 +869,10 @@ public sealed class PdfViewer : ContentView
             _compactBar.Add(_previousButton, 2, 0);
             _compactBar.Add(_pageLabel, 3, 0);
             _compactBar.Add(_nextButton, 4, 0);
-            _compactBar.Add(_zoomOutButton, 5, 0);
-            _compactBar.Add(_zoomLabel, 6, 0);
-            _compactBar.Add(_zoomInButton, 7, 0);
-            _compactBar.Add(_fitButton, 8, 0);
+            _compactBar.Add(_zoomOutButton, 0, 1);
+            _compactBar.Add(_zoomLabel, 1, 1);
+            _compactBar.Add(_zoomInButton, 2, 1);
+            _compactBar.Add(_fitButton, 4, 1);
             return;
         }
 
@@ -1052,7 +1054,7 @@ public sealed class PdfViewer : ContentView
         var viewerWidth = PdfViewerLayout.WidthDip(Width);
         var viewerHeight = PdfViewerLayout.HeightDip(Height);
         var allocatedWidth = System.Math.Max(160, viewerWidth - rail - pad);
-        var chrome = compact ? 72 : 148;
+        var chrome = compact ? PdfViewerLayout.CompactToolbarHeightDip : 148;
         var allocatedHeight = System.Math.Max(160, viewerHeight - chrome);
         var paneWidth = allocatedWidth;
         var surfaceHeight = _readingSurface.Height;

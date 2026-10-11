@@ -8,6 +8,9 @@ public static class PdfViewerLayout
     /// <summary>Width below which the reader uses phone chrome.</summary>
     public const double CompactBreakpoint = 800;
 
+    /// <summary>Height reserved by the two-row phone toolbar.</summary>
+    public const double CompactToolbarHeightDip = 96;
+
     /// <summary>Longest raster edge. Stops a rotate or pinch from allocating a phone-killing bitmap.</summary>
     public const int MaxRasterEdge = 4096;
 
