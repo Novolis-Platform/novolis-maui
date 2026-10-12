@@ -21,7 +21,6 @@ public sealed class PdfPageView : ContentView
         Opacity = 0.55,
     };
     private readonly Border _paper;
-    private string? _androidCachePath;
     private CancellationTokenSource? _renderCancellation;
     private byte[]? _pngBytes;
     private int _pixelWidth;
@@ -235,23 +234,8 @@ public sealed class PdfPageView : ContentView
         }
     }
 
-    private ImageSource CreatePngSource(byte[] png)
+    private static ImageSource CreatePngSource(byte[] png)
     {
-        if (OperatingSystem.IsAndroid())
-        {
-            var cacheRoot = FileSystem.CacheDirectory;
-            if (string.IsNullOrWhiteSpace(cacheRoot))
-                cacheRoot = Path.GetTempPath();
-            Directory.CreateDirectory(cacheRoot);
-            var previous = _androidCachePath;
-            _androidCachePath = Path.Combine(cacheRoot, $"novolis-pdf-cell-{Guid.NewGuid():N}.png");
-            File.WriteAllBytes(_androidCachePath, png);
-            if (previous is not null)
-                _ = DeleteLaterAsync(previous);
-
-            return new FileImageSource { File = _androidCachePath };
-        }
-
         var copy = png;
         return ImageSource.FromStream(() => new MemoryStream(copy, writable: false));
     }
@@ -263,15 +247,4 @@ public sealed class PdfPageView : ContentView
         _renderCancellation = null;
     }
 
-    private static async Task DeleteLaterAsync(string path)
-    {
-        try
-        {
-            await Task.Delay(2000).ConfigureAwait(false);
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-        }
-    }
 }

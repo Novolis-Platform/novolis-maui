@@ -30,7 +30,6 @@ public sealed class PdfReadingSurface : ContentView
     private readonly int[] _layerPages = [-1, -1, -1, -1, -1];
     private readonly CacheKey[] _layerKeys = new CacheKey[LayerCount];
     private readonly Dictionary<CacheKey, ImageSource> _sources = [];
-    private readonly Dictionary<CacheKey, string> _androidFiles = [];
     private readonly HashSet<CacheKey> _pending = [];
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<(double Width, double Height)> _media = [];
@@ -511,7 +510,7 @@ public sealed class PdfReadingSurface : ContentView
                 try
                 {
                     var rendered = renderer.RenderScaled(document, page, width, height, key.Rotation);
-                    var source = CreateSource(key, rendered.PngBytes, generation);
+                    var source = CreateSource(rendered.PngBytes);
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
                         if (generation != _renderGeneration || !ReferenceEquals(document, _document))
@@ -537,22 +536,8 @@ public sealed class PdfReadingSurface : ContentView
         });
     }
 
-    private ImageSource CreateSource(CacheKey key, byte[] png, int generation)
+    private static ImageSource CreateSource(byte[] png)
     {
-        if (OperatingSystem.IsAndroid())
-        {
-            var cacheRoot = FileSystem.CacheDirectory;
-            if (string.IsNullOrWhiteSpace(cacheRoot))
-                cacheRoot = Path.GetTempPath();
-            Directory.CreateDirectory(cacheRoot);
-            var path = Path.Combine(
-                cacheRoot,
-                $"novolis-pdf-page-g{generation}-{key.Page}-{key.Width}-{key.Rotation}.png");
-            File.WriteAllBytes(path, png);
-            _androidFiles[key] = path;
-            return new FileImageSource { File = path };
-        }
-
         var copy = png;
         return ImageSource.FromStream(() => new MemoryStream(copy, writable: false));
     }
@@ -583,8 +568,6 @@ public sealed class PdfReadingSurface : ContentView
             if (!found)
                 break;
             _sources.Remove(evict);
-            if (_androidFiles.Remove(evict, out var path))
-                _ = DeleteLaterAsync(path);
         }
     }
 
@@ -801,9 +784,6 @@ public sealed class PdfReadingSurface : ContentView
     {
         _renderGeneration++;
         _sources.Clear();
-        foreach (var path in _androidFiles.Values)
-            _ = DeleteLaterAsync(path);
-        _androidFiles.Clear();
         lock (_pending)
             _pending.Clear();
         for (var i = 0; i < LayerCount; i++)
@@ -812,18 +792,6 @@ public sealed class PdfReadingSurface : ContentView
             _layers[i].IsVisible = false;
             _layerPages[i] = -1;
             _layerKeys[i] = default;
-        }
-    }
-
-    private static async Task DeleteLaterAsync(string path)
-    {
-        try
-        {
-            await Task.Delay(2000).ConfigureAwait(false);
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
         }
     }
 

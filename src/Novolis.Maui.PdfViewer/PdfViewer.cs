@@ -439,6 +439,15 @@ public sealed class PdfViewer : ContentView
             _pages = Stage(
                 "page-tree",
                 () => PdfPageTree.Resolve(_session.Document, _limits));
+            if (_pages.Count == 0)
+            {
+                throw new PdfReaderException(
+                    new PdfDiagnosticEntry(
+                        PdfDiagnosticSeverity.Error,
+                        "PDFPAGES",
+                        "The PDF does not contain a readable page tree."));
+            }
+
             _textSpans = [];
             _pageIndex = 0;
             _zoom = 1;
