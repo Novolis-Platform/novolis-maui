@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Maui.Navigation</PackageId>
+    <RootNamespace>Novolis.Maui.Navigation</RootNamespace>
+    <Description>Native MAUI mobile navigation shell over the shared Novolis menu tree.</Description>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" />
+    <LibraryReference Include="Novolis.Commands.Navigation" />
+    <LibraryReference Include="Novolis.Maui.GraphicalProfile" />
+  </ItemGroup>
+</Project>

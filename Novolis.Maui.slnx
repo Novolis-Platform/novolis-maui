@@ -11,6 +11,7 @@
     <Project Path="src/Novolis.Maui.Activation/Novolis.Maui.Activation.csproj" />
     <Project Path="src/Novolis.Maui.Ndjson/Novolis.Maui.Ndjson.csproj" />
     <Project Path="src/Novolis.Maui.Updates/Novolis.Maui.Updates.csproj" />
+    <Project Path="src/Novolis.Maui.Navigation/Novolis.Maui.Navigation.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/MauiAgentDump/MauiAgentDump.csproj" />

@@ -46,6 +46,7 @@
 | `Novolis.Maui.WebView` | `dotnet add package Novolis.Maui.WebView` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.WebView/README.md) |
 | `Novolis.Maui.Agent` | `dotnet add package Novolis.Maui.Agent` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Agent/README.md) |
 | `Novolis.Maui.Agent.Protocol` | `dotnet add package Novolis.Maui.Agent.Protocol` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Agent.Protocol/README.md) |
+| `Novolis.Maui.Navigation` | `dotnet add package Novolis.Maui.Navigation` | [README](https://github.com/Novolis-Platform/novolis-maui/blob/main/src/Novolis.Maui.Navigation/README.md) |
 
 For NuGet.org and Visual Studio, the **embedded** README.md inside each package is authoritative.
 
