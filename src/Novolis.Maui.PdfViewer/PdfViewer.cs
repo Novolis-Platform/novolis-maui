@@ -52,7 +52,7 @@ public sealed class PdfViewer : ContentView
     private readonly PdfNavigationExtractor _navigation = new();
     private readonly PdfTextExtractor _textExtractor;
     private readonly PdfTextSearch _textSearch = new();
-    private PdfDocumentSession? _session;
+    private readonly PdfSessionSlot _sessionSlot = new();
     private IReadOnlyList<PdfResolvedPage> _pages = [];
     private IReadOnlyList<PdfTextSpan> _textSpans = [];
     private int _pageIndex;
@@ -204,6 +204,7 @@ public sealed class PdfViewer : ContentView
         };
         _readingSurface.PageChanged += OnSurfacePageChanged;
         _readingSurface.ZoomChanged += OnSurfaceZoomChanged;
+        _readingSurface.RenderFailed += OnSurfaceRenderFailed;
         _readingSurface.SizeChanged += (_, _) => UpdatePaneFromReadingStack();
         _workspace = new Grid
         {
@@ -316,15 +317,18 @@ public sealed class PdfViewer : ContentView
     /// <summary>Raised when opening or rendering fails.</summary>
     public event EventHandler<PdfViewerErrorEventArgs>? Error;
 
+    /// <summary>Obtains a password for an encrypted document.</summary>
+    public PdfPasswordProvider? PasswordProvider { get; set; }
+
     /// <summary>Current reader session, if a document is open.</summary>
-    public PdfDocumentSession? Session => _session;
+    public PdfDocumentSession? Session => _sessionSlot.Current;
 
     /// <summary>Typed catalog for the open document, when one was parsed.</summary>
-    public PdfCatalog? Catalog => _session?.Catalog;
+    public PdfCatalog? Catalog => _sessionSlot.Current?.Catalog;
 
     /// <summary>Reader diagnostics from the current session.</summary>
     public IReadOnlyList<PdfDiagnosticEntry> Diagnostics =>
-        _session?.Document.Diagnostics ?? [];
+        _sessionSlot.Current?.Document.Diagnostics ?? [];
 
     /// <summary>Current page index, zero-based.</summary>
     public int CurrentPageIndex => _pageIndex;
@@ -411,9 +415,9 @@ public sealed class PdfViewer : ContentView
     {
         ArgumentNullException.ThrowIfNull(request);
         SetBusy(true, "Opening document…");
+        PdfDocumentSession? nextSession = null;
         try
         {
-            await CloseAsync().ConfigureAwait(false);
             await using var input = await StageAsync(
                     "open-stream",
                     () => request.OpenReadAsync(cancellationToken).AsTask())
@@ -427,20 +431,41 @@ public sealed class PdfViewer : ContentView
                         _limits.MaximumDocumentBytes,
                         cancellationToken))
                 .ConfigureAwait(false);
-            buffer.Position = 0;
+            var bytes = buffer.ToArray();
             var stableId = request.Descriptor.StableId
-                ?? Convert.ToHexString(SHA256.HashData(buffer.ToArray()));
-            buffer.Position = 0;
-            var source = PdfSources.FromStream(buffer, request.Descriptor.DisplayName, stableId);
-            _session = await StageAsync(
-                    "parse",
-                    () => PdfDocumentSession.OpenAsync(source, _limits, cancellationToken).AsTask())
-                .ConfigureAwait(false);
-            _pages = Stage(
-                "page-tree",
-                () => PdfPageTree.Resolve(_session.Document, _limits));
-            if (_pages.Count == 0)
+                ?? Convert.ToHexString(SHA256.HashData(bytes));
+            var source = PdfSources.FromStream(
+                new MemoryStream(bytes, writable: false),
+                request.Descriptor.DisplayName,
+                stableId);
+            try
             {
+                nextSession = await StageAsync(
+                        "parse",
+                        () => PdfDocumentSession.OpenAsync(
+                                source,
+                                new PdfOpenOptions
+                                {
+                                    Limits = _limits,
+                                    PasswordProvider = PasswordProvider,
+                                },
+                                cancellationToken)
+                            .AsTask())
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                await source.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+
+            var nextPages = Stage(
+                "page-tree",
+                () => PdfPageTree.Resolve(nextSession.Document, _limits));
+            if (nextPages.Count == 0)
+            {
+                await nextSession.DisposeAsync().ConfigureAwait(false);
+                nextSession = null;
                 throw new PdfReaderException(
                     new PdfDiagnosticEntry(
                         PdfDiagnosticSeverity.Error,
@@ -457,30 +482,48 @@ public sealed class PdfViewer : ContentView
             _sidebarOpen = false;
             if (_stateStore is not null)
             {
-                await StageAsync(
-                        "remember-recent",
-                        () => _stateStore.RememberAsync(
-                                new PdfRecentDocument(
-                                    stableId,
-                                    request.Descriptor.DisplayName,
-                                    request.Descriptor.StableId ?? request.Descriptor.DisplayName,
-                                    DateTimeOffset.UtcNow),
-                                cancellationToken)
-                            .AsTask())
-                    .ConfigureAwait(false);
-                if (await StageAsync(
-                            "load-position",
-                            () => _stateStore.LoadPositionAsync(stableId, cancellationToken).AsTask())
-                        .ConfigureAwait(false)
-                    is { } position)
+                try
                 {
-                    _pageIndex = System.Math.Clamp(position.PageIndex, 0, System.Math.Max(0, _pages.Count - 1));
-                    _zoom = System.Math.Clamp(position.Zoom, PdfZoomLevels.Minimum, PdfZoomLevels.Maximum);
-                    _rotation = NormalizeRotation(position.Rotation);
+                    await _stateStore.RememberAsync(
+                            new PdfRecentDocument(
+                                stableId,
+                                request.Descriptor.DisplayName,
+                                request.Descriptor.StableId ?? request.Descriptor.DisplayName,
+                                DateTimeOffset.UtcNow),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    if (await _stateStore.LoadPositionAsync(stableId, cancellationToken)
+                            .ConfigureAwait(false)
+                        is { } position)
+                    {
+                        _pageIndex = System.Math.Clamp(
+                            position.PageIndex,
+                            0,
+                            System.Math.Max(0, nextPages.Count - 1));
+                        _zoom = System.Math.Clamp(
+                            position.Zoom,
+                            PdfZoomLevels.Minimum,
+                            PdfZoomLevels.Maximum);
+                        _rotation = NormalizeRotation(position.Rotation);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    SetStatus($"Opened {request.Descriptor.DisplayName}; reading position unavailable.");
+                    Error?.Invoke(this, new PdfViewerErrorEventArgs(exception));
                 }
             }
 
-            _outlines = _navigation.ExtractOutlines(_session.Document);
+            _ = await _sessionSlot.ReplaceAsync(nextSession).ConfigureAwait(false);
+            nextSession = null;
+            _pages = nextPages;
+            var committedSession = _sessionSlot.Current
+                ?? throw new InvalidOperationException("The PDF session replacement was not committed.");
+            _outlines = _navigation.ExtractOutlines(committedSession.Document);
             await MainThread.InvokeOnMainThreadAsync(async () =>
             {
                 var pages = Enumerable.Range(0, _pages.Count).ToArray();
@@ -488,8 +531,8 @@ public sealed class PdfViewer : ContentView
                 ShowReadingPage();
                 _outlineList.ItemsSource = _outlines;
                 SyncRailSelection();
-                _titleLabel.Text = _session.Document.Info.Title
-                    ?? _session.Document.Info.Source.DisplayName;
+                _titleLabel.Text = committedSession.Document.Info.Title
+                    ?? committedSession.Document.Info.Source.DisplayName;
                 ApplyTheme();
                 ApplyWorkspaceColumns();
                 RefreshFitSize();
@@ -504,6 +547,8 @@ public sealed class PdfViewer : ContentView
         }
         catch (Exception exception)
         {
+            if (nextSession is not null)
+                await nextSession.DisposeAsync().ConfigureAwait(false);
             SetStatus("Unable to open this PDF.");
             Error?.Invoke(this, new PdfViewerErrorEventArgs(exception));
             throw;
@@ -517,9 +562,7 @@ public sealed class PdfViewer : ContentView
     /// <summary>Closes the current document and clears the page surface.</summary>
     public async Task CloseAsync()
     {
-        if (_session is not null)
-            await _session.DisposeAsync().ConfigureAwait(false);
-        _session = null;
+        await _sessionSlot.ClearAsync().ConfigureAwait(false);
         _pages = [];
         _pageIndex = 0;
         _textSpans = [];
@@ -660,7 +703,7 @@ public sealed class PdfViewer : ContentView
 
     private Task RenderCurrentPageAsync(CancellationToken cancellationToken)
     {
-        if (_session is null || _pages.Count == 0)
+        if (_sessionSlot.Current is null || _pages.Count == 0)
             return Task.CompletedTask;
 
         SetStatus($"Page {_pageIndex + 1} of {_pages.Count}");
@@ -681,7 +724,8 @@ public sealed class PdfViewer : ContentView
         double dotsPerInch,
         CancellationToken cancellationToken)
     {
-        if (_session is null)
+        var session = _sessionSlot.Current;
+        if (session is null)
             throw new InvalidOperationException("No PDF document is open.");
         await _renderGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -689,7 +733,7 @@ public sealed class PdfViewer : ContentView
             return await StageAsync(
                     $"render-page-{pageIndex}",
                     () => _renderer.RenderAsync(
-                            _session.Document,
+                            session.Document,
                             new PdfRenderRequest(
                                 pageIndex,
                                 dotsPerInch,
@@ -999,6 +1043,12 @@ public sealed class PdfViewer : ContentView
         Error?.Invoke(this, new PdfViewerErrorEventArgs(exception));
     }
 
+    private void OnSurfaceRenderFailed(Exception exception)
+    {
+        SetStatus("A visible page could not be rendered.");
+        Error?.Invoke(this, new PdfViewerErrorEventArgs(exception));
+    }
+
     private async void GoToEnteredPageAsync()
     {
         if (int.TryParse(_pageEntry.Text, out var pageNumber))
@@ -1008,12 +1058,13 @@ public sealed class PdfViewer : ContentView
 
     private async void SearchAsync()
     {
-        if (_session is null || string.IsNullOrWhiteSpace(_searchBar.Text))
+        var session = _sessionSlot.Current;
+        if (session is null || string.IsNullOrWhiteSpace(_searchBar.Text))
             return;
         try
         {
             _textSpans = await Task.Run(
-                    () => _textExtractor.ExtractDocument(_session.Document))
+                    () => _textExtractor.ExtractDocument(session.Document))
                 .ConfigureAwait(false);
             var matches = _textSearch.Search(_textSpans, _searchBar.Text);
             await MainThread.InvokeOnMainThreadAsync(() =>
@@ -1034,9 +1085,10 @@ public sealed class PdfViewer : ContentView
 
     private async Task SavePositionAsync(CancellationToken cancellationToken)
     {
-        if (_stateStore is null || _session is null)
+        var session = _sessionSlot.Current;
+        if (_stateStore is null || session is null)
             return;
-        var stableId = _session.Source.Descriptor.StableId;
+        var stableId = session.Source.Descriptor.StableId;
         if (string.IsNullOrWhiteSpace(stableId))
             return;
         await _stateStore.SavePositionAsync(
@@ -1118,14 +1170,15 @@ public sealed class PdfViewer : ContentView
 
     private void ShowReadingPage()
     {
-        if (_pages.Count == 0 || _session is null)
+        var session = _sessionSlot.Current;
+        if (_pages.Count == 0 || session is null)
         {
             _readingSurface.Clear();
             UpdateToolbar();
             return;
         }
 
-        _readingSurface.Bind(_session.Document, _pages, _renderer);
+        _readingSurface.Bind(session.Document, _pages, _renderer);
         _readingSurface.SetView(_paneWidth, _paneHeight, _zoom, _fitKind, _rotation);
         _readingSurface.GoToPage(_pageIndex);
         UpdateToolbar();
@@ -1271,13 +1324,25 @@ public sealed class PdfViewer : ContentView
             return true;
         });
 
-    private static PdfReaderException WrapStage(string stage, Exception exception) =>
-        new(
+    private static PdfReaderException WrapStage(string stage, Exception exception)
+    {
+        if (exception is PdfReaderException reader)
+        {
+            return new PdfReaderException(
+                reader.Diagnostic with
+                {
+                    Message = $"Open failed at {stage}: {reader.Diagnostic.Message}",
+                },
+                reader.FailureKind);
+        }
+
+        return new PdfReaderException(
             new PdfDiagnosticEntry(
                 PdfDiagnosticSeverity.Error,
                 "PDFOPEN",
                 $"Open failed at {stage}: {exception.Message}",
                 Exception: exception));
+    }
 
     private void UpdateToolbar()
     {

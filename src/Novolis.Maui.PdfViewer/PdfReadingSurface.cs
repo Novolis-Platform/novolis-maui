@@ -1,6 +1,7 @@
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Layouts;
 using Novolis.Maui.GraphicalProfile;
+using Novolis.Pdf.Abstractions;
 using Novolis.Pdf.Parsing;
 using Novolis.Pdf.Rendering;
 using Novolis.Pdf.Rendering.Skia;
@@ -111,6 +112,9 @@ public sealed class PdfReadingSurface : ContentView
 
     /// <summary>Raised when pinch or programmatic zoom changes the scale.</summary>
     public event EventHandler<double>? ZoomChanged;
+
+    /// <summary>Raised when an asynchronous visible-page render fails.</summary>
+    public event Action<Exception>? RenderFailed;
 
     /// <summary>Current top page, zero-based.</summary>
     public int PageIndex => _pageIndex;
@@ -510,13 +514,30 @@ public sealed class PdfReadingSurface : ContentView
                 try
                 {
                     var rendered = renderer.RenderScaled(document, page, width, height, key.Rotation);
+                    if (rendered.Status == PdfRenderStatus.Failed)
+                    {
+                        var diagnostic = rendered.Diagnostics.FirstOrDefault(
+                            static item => item.Severity == PdfDiagnosticSeverity.Error)
+                            ?? rendered.Diagnostics.FirstOrDefault();
+                        throw new PdfReaderException(
+                            diagnostic
+                            ?? new PdfDiagnosticEntry(
+                                PdfDiagnosticSeverity.Error,
+                                "PDFRENDER",
+                                "The page renderer returned a failed result."),
+                            PdfReaderFailureKind.Render);
+                    }
                     var source = CreateSource(rendered.PngBytes);
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
                         if (generation != _renderGeneration || !ReferenceEquals(document, _document))
                         {
-                            lock (_pending)
-                                _pending.Remove(key);
+                            if (generation == _renderGeneration)
+                            {
+                                lock (_pending)
+                                    _pending.Remove(key);
+                            }
+
                             return;
                         }
                         Store(key, source);
@@ -528,10 +549,17 @@ public sealed class PdfReadingSurface : ContentView
                     _gate.Release();
                 }
             }
-            catch
+            catch (Exception exception)
             {
+                if (generation != _renderGeneration || !ReferenceEquals(document, _document))
+                    return;
                 lock (_pending)
                     _pending.Remove(key);
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    if (generation == _renderGeneration && ReferenceEquals(document, _document))
+                        RenderFailed?.Invoke(exception);
+                });
             }
         });
     }

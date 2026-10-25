@@ -1,4 +1,5 @@
 using Profile = Novolis.Maui.GraphicalProfile.GraphicalProfile;
+using Novolis.Pdf.Abstractions;
 using Novolis.Pdf.Rendering;
 
 namespace Novolis.Maui.PdfViewer;
@@ -153,12 +154,27 @@ public sealed class PdfPageView : ContentView
     private async Task RenderAsync(int pageIndex)
     {
         CancelRender();
-        _renderCancellation = new CancellationTokenSource();
+        var cancellation = new CancellationTokenSource();
+        var token = cancellation.Token;
+        _renderCancellation = cancellation;
         try
         {
-            var rendered = await RenderPageAsync!(pageIndex, _renderCancellation.Token)
+            var rendered = await RenderPageAsync!(pageIndex, token)
                 .ConfigureAwait(false);
-            if (pageIndex != PageIndex || _renderCancellation.IsCancellationRequested)
+            if (rendered.Status == PdfRenderStatus.Failed)
+            {
+                var diagnostic = rendered.Diagnostics.FirstOrDefault(
+                    static item => item.Severity == PdfDiagnosticSeverity.Error)
+                    ?? rendered.Diagnostics.FirstOrDefault();
+                throw new PdfReaderException(
+                    diagnostic
+                    ?? new PdfDiagnosticEntry(
+                        PdfDiagnosticSeverity.Error,
+                        "PDFRENDER",
+                        "The page renderer returned a failed result."),
+                    PdfReaderFailureKind.Render);
+            }
+            if (pageIndex != PageIndex || token.IsCancellationRequested)
                 return;
             _pngBytes = rendered.PngBytes;
             _pixelWidth = rendered.PixelWidth;
@@ -175,7 +191,7 @@ public sealed class PdfPageView : ContentView
                 SemanticProperties.SetDescription(this, $"PDF page {pageIndex + 1}");
             });
         }
-        catch (OperationCanceledException) when (_renderCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
         catch (Exception exception)
@@ -187,6 +203,12 @@ public sealed class PdfPageView : ContentView
                 _image.Source = null;
             });
             RenderFailed?.Invoke(exception);
+        }
+        finally
+        {
+            if (ReferenceEquals(_renderCancellation, cancellation))
+                _renderCancellation = null;
+            cancellation.Dispose();
         }
     }
 
