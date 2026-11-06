@@ -31,4 +31,6 @@
   <Import Project="$(MSBuildThisFileDirectory)..\novolis-governance\build\Novolis.GitHubPackages.props"
           Condition="Exists('$(MSBuildThisFileDirectory)..\novolis-governance\build\Novolis.GitHubPackages.props')" />
   <Import Project="$(MSBuildThisFileDirectory)..\novolis-governance\build\Novolis.OneTypePerFile.props" Condition="Exists('$(MSBuildThisFileDirectory)..\novolis-governance\build\Novolis.OneTypePerFile.props')" />
+  <Import Project="$(MSBuildThisFileDirectory)..\novolis-governance\build\Novolis.Android.JavaSdk.props"
+          Condition="'$(_NovolisAndroidJavaSdkPropsImported)' != 'true' and Exists('$(MSBuildThisFileDirectory)..\novolis-governance\build\Novolis.Android.JavaSdk.props')" />
 </Project>
