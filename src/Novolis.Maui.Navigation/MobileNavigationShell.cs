@@ -29,6 +29,8 @@ public sealed class MobileNavigationShell : ContentView
     {
         _navigation = navigation ?? throw new ArgumentNullException(nameof(navigation));
         AutomationId = "MobileNavigationShell";
+        HorizontalOptions = LayoutOptions.Fill;
+        VerticalOptions = LayoutOptions.Fill;
         _backButton = CreateChromeButton("Back", "MobileNavigationBack", Back);
         _menuButton = CreateChromeButton("More", "MobileNavigationMore", OpenMenu);
         Build();
@@ -178,6 +180,8 @@ public sealed class MobileNavigationShell : ContentView
         _overlayLayer.Children.Add(_overlayCard);
         _overlayLayer.IsVisible = false;
 
+        _root.HorizontalOptions = LayoutOptions.Fill;
+        _root.VerticalOptions = LayoutOptions.Fill;
         _root.RowDefinitions =
         [
             new RowDefinition(GridLength.Auto),
@@ -214,7 +218,7 @@ public sealed class MobileNavigationShell : ContentView
         {
             _primaryBar.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
             var node = nodes[index];
-            var button = CreateNodeButton(node, $"MobileNavigationPrimary.{node.Id}");
+            var button = CreateNodeButton(node, $"MobileNavigationPrimary.{node.Id}", primary: true);
             Grid.SetColumn(button, index);
             _primaryBar.Add(button);
         }
@@ -269,12 +273,12 @@ public sealed class MobileNavigationShell : ContentView
         }
     }
 
-    Button CreateNodeButton(MobileMenuNode node, string automationId)
+    Button CreateNodeButton(MobileMenuNode node, string automationId, bool primary = false)
     {
         var label = node.Label;
-        if (!string.IsNullOrWhiteSpace(node.Subtitle))
+        if (!primary && !string.IsNullOrWhiteSpace(node.Subtitle))
             label += $"\n{node.Subtitle}";
-        if (node.Kind == MobileMenuNodeKind.Group)
+        if (!primary && node.Kind == MobileMenuNodeKind.Group)
             label += "  ›";
         if (node.Kind == MobileMenuNodeKind.Toggle)
             label += node.IsChecked ? "  On" : "  Off";
@@ -284,11 +288,15 @@ public sealed class MobileNavigationShell : ContentView
             AutomationId = automationId,
             Text = label,
             FontFamily = Profile.FontFamily,
-            FontSize = GraphicalProfileColors.NavigationSize,
+            FontSize = primary
+                ? GraphicalProfileColors.CaptionSize
+                : GraphicalProfileColors.NavigationSize,
             FontAttributes = FontAttributes.Bold,
             MinimumHeightRequest = GraphicalProfileColors.TouchTarget,
-            Padding = new Thickness(12, 7),
+            Padding = primary ? new Thickness(6, 8) : new Thickness(12, 7),
             HorizontalOptions = LayoutOptions.Fill,
+            VerticalOptions = LayoutOptions.Fill,
+            LineBreakMode = LineBreakMode.TailTruncation,
             IsEnabled = node.IsEnabled,
             BackgroundColor = node.IsSelected ? Profile.AccentFill : Profile.Raised,
             TextColor = node.IsSelected ? Profile.OnAccentFill : Profile.Text,
