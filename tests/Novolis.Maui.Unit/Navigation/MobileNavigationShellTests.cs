@@ -47,6 +47,19 @@ public sealed class MobileNavigationShellTests
         await Assert.That(((VisualElement)root.Children[3]).IsVisible).IsTrue();
     }
 
+    [Test]
+    public async Task Shell_uses_icon_glyphs_when_three_or_fewer_primary_routes()
+    {
+        var navigation = new MobileNavigationController(CreateTree());
+        var shell = new MobileNavigationShell(navigation);
+        var root = (Grid)shell.Content!;
+        var primary = (Grid)root.Children[2];
+        var buttons = primary.Children.OfType<Button>().ToArray();
+
+        await Assert.That(buttons.Select(button => button.Text)).IsEquivalentTo(["T", "P"]);
+        await Assert.That(SemanticProperties.GetDescription(buttons[0])).IsEqualTo("Today");
+    }
+
     static MobileMenuTree CreateTree() =>
         new(
         [
